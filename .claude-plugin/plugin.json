@@ -1,0 +1,8 @@
+{
+  "name": "zc",
+  "version": "0.1.0",
+  "description": "Claude Code as manager of Gemini (Antigravity) worker accounts: scoped tasks, one worker at a time, automatic account failover, verified before every commit. Built on ECC.",
+  "author": { "name": "ZoRa Tech" },
+  "license": "MIT",
+  "keywords": ["orchestrator", "gemini", "workers", "ecc", "manager"]
+}

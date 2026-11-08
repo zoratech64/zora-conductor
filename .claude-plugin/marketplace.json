@@ -1,0 +1,15 @@
+{
+  "name": "zora-conductor",
+  "owner": { "name": "ZoRa Tech" },
+  "metadata": { "description": "Claude manager + Gemini workers orchestrator, built on ECC" },
+  "plugins": [
+    {
+      "name": "zc",
+      "source": "./",
+      "description": "Manager workflow for the zc CLI: plan with ECC, dispatch scoped tasks to Gemini workers one at a time, review and verify every result.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "workflow"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "zora-conductor",
+  "version": "0.1.0",
+  "description": "Claude Code as manager, Gemini (Antigravity) accounts as workers, ECC as the base. One worker at a time, automatic account failover, in-place edits.",
+  "type": "module",
+  "bin": { "zc": "bin/zc.mjs" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "license": "MIT",
+  "author": "ZoRa Tech",
+  "files": ["bin", "src", "skills", "agents", "commands", ".claude-plugin", "docs"]
+}
