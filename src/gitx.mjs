@@ -3,10 +3,34 @@ import {
   copyFileSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import { captureState, fingerprint } from './snapshot.mjs';
+import { captureState } from './snapshot.mjs';
 
 /** Fingerprints of every currently changed path (never `.zc/`). */
-export const dirtyState = (root) => captureState(root, changedPaths(statusEntries(root)));
+/** Index entry (mode, blob, stage) of each path, or '-' when it is not in the index. */
+function indexState(root, paths) {
+  const out = Object.fromEntries(paths.map((p) => [p, '-']));
+  for (let i = 0; i < paths.length; i += 100) {
+    const raw = git(root, ['ls-files', '-s', '-z', '--', ...paths.slice(i, i + 100)], { allowFail: true }).stdout ?? '';
+    for (const row of raw.split('\0').filter(Boolean)) {
+      const m = /^(\d+) ([0-9a-f]+) (\d)\t(.*)$/s.exec(row);
+      if (m) out[m[4]] = out[m[4]] === '-' ? `${m[1]}:${m[2]}:${m[3]}` : `${out[m[4]]},${m[1]}:${m[2]}:${m[3]}`;
+    }
+  }
+  return out;
+}
+
+/**
+ * What each path looks like right now: working-tree content plus staged (index) state. Staging a file
+ * therefore counts as a change, so nothing you staged is ever discarded as "the worker's".
+ */
+export function pathStates(root, paths) {
+  const unique = [...new Set(paths)].sort();
+  const wt = captureState(root, unique);
+  const idx = indexState(root, unique);
+  return Object.fromEntries(unique.map((p) => [p, `${wt[p]}#${idx[p]}`]));
+}
+
+export const dirtyState = (root) => pathStates(root, changedPaths(statusEntries(root)));
 
 export function git(root, args, { allowFail = false } = {}) {
   const result = spawnSync('git', ['-c', 'core.quotepath=off', ...args], {
@@ -99,10 +123,11 @@ export function rollbackPaths(root, entries, expected) {
   const restored = [];
   const conflicts = [];
   const todo = [];
-  for (const path of changedPaths(entries)) {
-    if (isZc(path)) continue;
+  const paths = changedPaths(entries).filter((p) => !isZc(p));
+  const now = pathStates(root, paths);
+  for (const path of paths) {
     if (!(path in expected)) { conflicts.push({ path, reason: 'not part of the recorded worker result' }); continue; }
-    if (fingerprint(root, path) !== expected[path]) { conflicts.push({ path, reason: 'changed after the worker finished' }); continue; }
+    if (now[path] !== expected[path]) { conflicts.push({ path, reason: 'changed or staged after the worker finished' }); continue; }
     todo.push(path);
   }
   const tracked = todo.filter((p) => inHead(root, p));

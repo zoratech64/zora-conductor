@@ -323,3 +323,41 @@ test('a configured rule pack that does not exist is an error, not silence', () =
   const { config } = makeRepo({ ecc: { rulePacks: ['common', 'cobol'] } });
   assert.throws(() => loadEccRules(config), /rule pack "cobol".*Available: common, dart, typescript/);
 });
+
+test('if the old install cannot be put back, its backup is preserved and recovered later', () => {
+  makeHome(); noEnv();
+  installFrom(fakeEcc());
+  const before = JSON.stringify(buildIndex(installedEccDir()));
+  assert.throws(() => installFrom(fakeEcc(), {}, {
+    beforePromote: () => { throw new Error('rename failed'); },
+    beforeRestore: () => { throw new Error('restore failed'); }
+  }), /previous ECC could not be put back.*preserved at .*\.ecc-old-/);
+  assert.equal(existsSync(installedEccDir()), false);
+  const backups = leftovers().filter((n) => n.startsWith('.ecc-old-'));
+  assert.equal(backups.length, 1, 'the backup was not deleted');
+  assert.equal(eccRoot({ ecc: { path: '' } }).source, 'installed', 'the next lookup restores it');
+  assert.equal(JSON.stringify(buildIndex(installedEccDir())), before);
+});
+
+test('recovery waits for a running install instead of racing it', async () => {
+  makeHome(); noEnv();
+  installFrom(fakeEcc());
+  const parent = dirname(installedEccDir());
+  renameSync(installedEccDir(), join(parent, '.ecc-old-1'));
+  const { acquireLock } = await import('../src/fsx.mjs');
+  const release = acquireLock(join(parent, 'ecc-install.lock'), {});
+  assert.equal(recoverInterrupted(), false, 'an install holds the lock: leave its backup alone');
+  assert.ok(existsSync(join(parent, '.ecc-old-1')));
+  release();
+  assert.equal(recoverInterrupted(), true);
+  assert.ok(existsSync(installedEccDir()));
+});
+
+test('the npm package contains the bundled ECC rules', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync('npm', ['pack', '--dry-run', '--json'], { cwd: join(import.meta.dirname, '..'), encoding: 'utf8', shell: process.platform === 'win32' });
+  assert.equal(r.status, 0, r.stderr);
+  const files = JSON.parse(r.stdout)[0].files.map((f) => f.path.replace(/\\/g, '/'));
+  assert.ok(files.includes('vendor/ecc/rules/common/coding-style.md'));
+  assert.ok(files.includes('vendor/ecc/LICENSE'));
+});

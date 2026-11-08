@@ -171,13 +171,23 @@ const describeProblems = (v) => v.errors.slice(0, 8).map((e) => `  - ${e}`).join
 // ---------------------------------------------------------------- which ECC folder is used
 
 /** Restore a backup left by an interrupted swap, so a crash never leaves zc without its installed ECC. */
-export function recoverInterrupted(parent = dirname(installedEccDir())) {
+export function recoverInterrupted(parent = dirname(installedEccDir()), { locked = false } = {}) {
   const target = installedEccDir();
   if (existsSync(target) || !existsSync(parent)) return false;
-  const backups = readdirSync(parent).filter((n) => n.startsWith('.ecc-old-')).sort();
-  if (!backups.length) return false;
-  renameSync(join(parent, backups[backups.length - 1]), target);
-  return true;
+  if (!readdirSync(parent).some((n) => n.startsWith('.ecc-old-'))) return false;
+  let release = () => {};
+  if (!locked) {
+    try { release = acquireLock(join(parent, 'ecc-install.lock'), {}); } catch { return false; } // an install is running; it will finish or restore by itself
+  }
+  try {
+    if (existsSync(target)) return false;
+    const backups = readdirSync(parent).filter((n) => n.startsWith('.ecc-old-')).sort();
+    if (!backups.length) return false;
+    renameSync(join(parent, backups[backups.length - 1]), target);
+    return true;
+  } finally {
+    release();
+  }
 }
 
 export const readInstalled = () => {
@@ -368,7 +378,7 @@ export function installFrom(sourceDir, meta = {}, hooks = {}) {
   let staging = null;
   let backup = null;
   try {
-    recoverInterrupted(parent);
+    recoverInterrupted(parent, { locked: true });
     for (const n of readdirSync(parent).filter((x) => x.startsWith('.ecc-new-'))) rmQuiet(join(parent, n)); // from a crashed install
     staging = mkdtempSync(join(parent, '.ecc-new-'));
     for (const name of COPY_DIRS) {
@@ -393,7 +403,18 @@ export function installFrom(sourceDir, meta = {}, hooks = {}) {
       hooks.beforePromote?.();
       renameSync(staging, target);
     } catch (error) {
-      if (backup) { renameSync(backup, target); backup = null; }
+      if (backup) {
+        try {
+          hooks.beforeRestore?.();
+          renameSync(backup, target);
+          backup = null;
+        } catch (restoreError) {
+          // Never delete the only copy of the previous install: keep it where `recoverInterrupted` will find it.
+          const kept = backup;
+          backup = null;
+          throw new Error(`${error.message}; and the previous ECC could not be put back (${restoreError.message}). It is preserved at ${kept} and is restored automatically by the next zc ecc command.`);
+        }
+      }
       throw error;
     }
     staging = null;

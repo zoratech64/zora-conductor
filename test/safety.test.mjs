@@ -156,3 +156,50 @@ test('durations are validated in task files, config, and again at dispatch', asy
   assert.equal(r.status, 'NEEDS_HUMAN');
   assert.match(r.nextAction, /minutes/);
 });
+
+test('a .zc/ file too big to snapshot stops the run before any worker starts', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  writeFileSync(join(dir, '.zc/big.bin'), Buffer.alloc(3 * 1024 * 1024, 1));
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'x' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.status, 'NEEDS_HUMAN');
+  assert.match(r.nextAction, /too large.*big\.bin/);
+  assert.equal(existsSync(join(g1.profileDir, 'calls.log')), false, 'the worker never ran');
+});
+
+test('a .zc/ change that cannot be restored is reported as not restored, never as success', () => {
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, '.zc/a.md'), 'A');
+  const snap = snapshotZc(dir, join(dir, '.zc-copy-x'));
+  snap.copied = []; // pretend no copy was kept
+  writeFileSync(join(dir, '.zc/a.md'), 'changed');
+  const v = restoreZc(dir, snap, { saveDir: join(dir, '.zc-evidence-x') });
+  assert.deepEqual(v.map((x) => [x.path, x.restored]), [['.zc/a.md', false]]);
+});
+
+test('staging a worker file counts as a change: reject and rollback refuse to discard it', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'worker' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  git(dir, 'add', 'src/a.txt'); // file content is unchanged, but you staged it
+  assert.throws(() => rejectRun({ root: dir, runId: r.runId }), /not exactly run/);
+  assert.match(git(dir, 'status', '--porcelain'), /^A  src\/a\.txt/m, 'still staged');
+  const expected = JSON.parse(readFileSync(join(r.runDir, 'result.json'), 'utf8')).workerState;
+  const rb = rollbackPaths(dir, statusEntries(dir), expected);
+  assert.deepEqual(rb.conflicts.map((c) => c.path), ['src/a.txt']);
+  assert.match(git(dir, 'status', '--porcelain'), /^A  src\/a\.txt/m);
+  rejectRun({ root: dir, runId: r.runId, force: true });
+  assert.equal(statusEntries(dir).length, 0);
+});
+
+test('repair also refuses when you staged the worker result', async () => {
+  makeHome();
+  const { dir, config } = makeRepo({ verify: [FAIL] });
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'worker' } });
+  const r1 = await dispatch({ root: dir, task: scoped(), config });
+  git(dir, 'add', 'src/a.txt');
+  const r2 = await dispatch({ root: dir, task: scoped(), config, repairOf: r1.runId });
+  assert.equal(r2.status, 'NEEDS_HUMAN');
+});

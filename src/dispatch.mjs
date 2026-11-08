@@ -178,6 +178,12 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       const { prompt } = taskPrompt({ root, task, config, resumeNote });
       writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
       const zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
+      if (zcSnap.uncopied.length) {
+        attempt.outcome = 'not-started';
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          nextAction: `no worker was started: these .zc/ files are too large (or not regular files) to protect with a restorable copy: ${zcSnap.uncopied.slice(0, 5).join(', ')}. Move them out of .zc/ and dispatch again.`
+        });
+      }
       const started = Date.now();
       const r = await runAgy({
         account, prompt, cwd: root, timeoutSec,
@@ -191,6 +197,15 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
       const zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
       if (zcViolations.length) attempt.zcViolations = zcViolations;
+      const unrestored = zcViolations.filter((v) => !v.restored);
+      if (unrestored.length) {
+        attempt.outcome = 'zc-not-restored';
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          account: account.id,
+          forbidden: unrestored.map((v) => v.path),
+          nextAction: `the worker changed .zc/ files that could not be restored: ${unrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
+        });
+      }
       const workerState = G.dirtyState(root);
 
       if (G.head(root) !== head0 || G.branch(root) !== branch0) {

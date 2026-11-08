@@ -55,7 +55,8 @@ function walkZc(root) {
 
 /**
  * The project's own `.zc/` folder (config, tasks, notes) is never writable by a worker. Take an exact
- * copy before the worker starts so any change can be detected and undone afterwards.
+ * copy before the worker starts so any change can be detected and undone afterwards. `uncopied` lists
+ * files too big (or not regular files) to keep a copy of; the caller must not start a worker while it is non-empty.
  */
 export function snapshotZc(root, copyDir) {
   const walked = walkZc(root);
@@ -71,7 +72,8 @@ export function snapshotZc(root, copyDir) {
     copied.add(rel);
     total += size;
   }
-  return { files: walked.files, dirs: [...walked.dirs], copied: [...copied], copyDir };
+  const uncopied = Object.keys(walked.files).filter((rel) => !copied.has(rel));
+  return { files: walked.files, dirs: [...walked.dirs], copied: [...copied], uncopied, copyDir };
 }
 
 /**

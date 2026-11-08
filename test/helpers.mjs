@@ -23,6 +23,7 @@ export function makeRepo(configExtra = {}) {
   git(dir, 'config', 'user.email', 't@example.com');
   git(dir, 'config', 'user.name', 'Test');
   git(dir, 'config', 'commit.gpgsign', 'false');
+  git(dir, 'config', 'core.autocrlf', 'false'); // Windows would otherwise turn restored files into CRLF
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'README.md'), 'hello\n');
   writeFileSync(join(dir, 'src', 'keep.txt'), 'keep\n');

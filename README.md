@@ -95,7 +95,7 @@ Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
 
 ## What is and is not verified
 
-Verified here (Linux, 80 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, content-verified rollback and reject, atomic ECC install, ECC catalog validation, ECC rule injection, plugin manifest validation.
+Verified here (Linux, 87 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, content-verified rollback and reject, atomic ECC install, ECC catalog validation, ECC rule injection, plugin manifest validation.
 
 **Not verified yet, because it needs real accounts and machines:**
 
