@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { dispatch, rejectRun } from '../src/dispatch.mjs';
@@ -216,4 +216,38 @@ test('empty .zc/ folders are protected too: deleted ones come back, new ones are
     [['.zc/keepdir', 'removed', 'dir', true], ['.zc/sneaky', 'added', 'dir', true]]);
   assert.ok(existsSync(join(dir, '.zc/keepdir')));
   assert.ok(!existsSync(join(dir, '.zc/sneaky')));
+});
+
+test('the .zc root itself is protected: empty root deleted, absent root created, root swapped for a file', () => {
+  const emptied = () => { const { dir } = makeRepo(); rmSync(join(dir, '.zc/config.json')); return dir; };
+  const run = (dir, mutate) => {
+    const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+    mutate(dir);
+    return restoreZc(dir, snap, { saveDir: join(dir, '..', `zc-ev-${Math.random().toString(36).slice(2)}`) });
+  };
+  // 1. empty .zc deleted
+  const a = emptied();
+  assert.deepEqual(run(a, (d) => rmSync(join(d, '.zc'), { recursive: true })).map((v) => [v.path, v.kind, v.change, v.restored]), [['.zc', 'root', 'removed', true]]);
+  assert.ok(existsSync(join(a, '.zc')));
+  // 2. absent .zc created (empty)
+  const b = emptied();
+  rmSync(join(b, '.zc'), { recursive: true });
+  assert.deepEqual(run(b, (d) => mkdirSync(join(d, '.zc'))).map((v) => [v.path, v.kind, v.change, v.restored]), [['.zc', 'root', 'added', true]]);
+  assert.ok(!existsSync(join(b, '.zc')));
+  // 3. .zc replaced by a file
+  const c = emptied();
+  const v3 = run(c, (d) => { rmSync(join(d, '.zc'), { recursive: true }); writeFileSync(join(d, '.zc'), 'not a folder'); });
+  assert.deepEqual(v3.map((v) => [v.path, v.kind, v.change, v.restored]), [['.zc', 'root', 'replaced', true]]);
+  assert.ok(statSync(join(c, '.zc')).isDirectory(), 'a real folder is back');
+  // 4. untouched root: no violations
+  assert.deepEqual(run(emptied(), () => {}), []);
+});
+
+test('a .zc that is a symlink or a file cannot be protected, so it is reported before any worker starts', () => {
+  const { dir } = makeRepo();
+  const snap = snapshotZc(dir, join(dir, '..', 'zc-copy-link'));
+  assert.deepEqual(snap.uncopied, []);
+  rmSync(join(dir, '.zc'), { recursive: true });
+  writeFileSync(join(dir, '.zc'), 'x');
+  assert.match(snapshotZc(dir, join(dir, '..', 'zc-copy-file')).uncopied.join(), /\.zc \(a file/);
 });

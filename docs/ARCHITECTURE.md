@@ -81,3 +81,4 @@ Commands and agents describe procedures that rely on tools workers do not have (
 - **ECC install recovery** takes the same lock as installs, and a backup is never deleted unless the new install is in place; if the old one cannot be restored it is kept and restored by the next `zc ecc` command.
 - The npm package includes `vendor/` (bundled rules).
 - Empty `.zc/` folders are protected like files (deleted ones are recreated, new ones removed and reported). A lookup that meets an install mid-swap waits for it (up to 15 s, `ZC_ECC_WAIT_MS`) and then fails clearly; it never falls back to the bundled rules.
+- The `.zc` folder itself is tracked too: deleting, creating or replacing it (by a file) is detected, undone and reported as a violation. A `.zc` that is a symlink or a file blocks the run before a worker starts.

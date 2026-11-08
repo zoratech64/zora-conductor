@@ -36,6 +36,12 @@ export function sameState(a, b) {
 
 export const describeState = (fp) => (fp === 'missing' ? 'absent' : fp.startsWith('file:') ? 'a file' : fp.startsWith('link:') ? 'a symlink' : fp);
 
+/** What `.zc` itself is: missing, dir, link or file. */
+const rootKind = (root) => {
+  const st = (() => { try { return lstatSync(resolve(root, '.zc')); } catch { return null; } })();
+  return !st ? 'missing' : st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file';
+};
+
 /** Every file, directory and symlink under <root>/.zc, as forward-slash paths. */
 function walkZc(root) {
   const out = { files: {}, dirs: new Set() };
@@ -73,7 +79,9 @@ export function snapshotZc(root, copyDir) {
     total += size;
   }
   const uncopied = Object.keys(walked.files).filter((rel) => !copied.has(rel));
-  return { files: walked.files, dirs: [...walked.dirs], copied: [...copied], uncopied, copyDir };
+  const kind = rootKind(root);
+  if (kind === 'link' || kind === 'file') uncopied.push(`.zc (a ${kind}, not a folder)`);
+  return { files: walked.files, dirs: [...walked.dirs], copied: [...copied], uncopied, rootKind: kind, copyDir };
 }
 
 /**
@@ -82,9 +90,22 @@ export function snapshotZc(root, copyDir) {
  * Returns one entry per difference: { path, change: modified|added|removed, restored }.
  */
 export function restoreZc(root, snap, { saveDir }) {
-  const now = walkZc(root);
   const copied = new Set(snap.copied);
   const violations = [];
+  // The .zc folder itself: deleted, created, or swapped for something that is not a folder.
+  const before = snap.rootKind ?? 'dir';
+  const after = rootKind(root);
+  const rootEntry = { path: '.zc', kind: 'root', change: before === 'missing' ? 'added' : after === 'missing' ? 'removed' : 'replaced', restored: false };
+  const rootChanged = after !== before && !(before === 'missing' && after === 'missing');
+  if (rootChanged && before === 'dir') {
+    try {
+      if (after !== 'missing') rmSync(resolve(root, '.zc'), { force: true, recursive: true });
+      mkdirSync(resolve(root, '.zc'), { recursive: true });
+      rootEntry.restored = rootKind(root) === 'dir';
+    } catch { /* reported as not restored */ }
+    violations.push(rootEntry);
+  }
+  const now = walkZc(root);
   const paths = [...new Set([...Object.keys(snap.files), ...Object.keys(now.files)])].sort();
   for (const rel of paths) {
     const before = snap.files[rel] ?? 'missing';
@@ -132,8 +153,12 @@ export function restoreZc(root, snap, { saveDir }) {
     } catch { /* not empty: a file in it is reported separately */ }
     violations.push(entry);
   }
-  if (!snap.dirs.length && !Object.keys(snap.files).length) {
-    try { rmdirSync(resolve(root, '.zc')); } catch { /* not empty or absent */ }
+  if (before === 'missing' && rootKind(root) !== 'missing') {
+    try {
+      rmSync(resolve(root, '.zc'), { recursive: true, force: true });
+      rootEntry.restored = true;
+    } catch { /* reported as not restored */ }
+    violations.push(rootEntry);
   }
   return violations;
 }
