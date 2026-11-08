@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { dispatch, rejectRun } from '../src/dispatch.mjs';
@@ -250,4 +251,48 @@ test('a .zc that is a symlink or a file cannot be protected, so it is reported b
   rmSync(join(dir, '.zc'), { recursive: true });
   writeFileSync(join(dir, '.zc'), 'x');
   assert.match(snapshotZc(dir, join(dir, '..', 'zc-copy-file')).uncopied.join(), /\.zc \(a file/);
+});
+
+test('a .zc that is a real symlink blocks the run: no worker starts', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const elsewhere = mkdtempSync(join(tmpdir(), 'zc-elsewhere-'));
+  writeFileSync(join(elsewhere, 'config.json'), '{}');
+  rmSync(join(dir, '.zc'), { recursive: true });
+  symlinkSync(elsewhere, join(dir, '.zc'), 'dir');
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'x' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.status, 'NEEDS_HUMAN');
+  assert.match(r.nextAction, /\.zc \(a link, not a folder\)/);
+  assert.equal(existsSync(join(g1.profileDir, 'calls.log')), false, 'the worker never ran');
+});
+
+test('a worker that swaps .zc/ for a symlink is undone without touching the link target', () => {
+  const { dir } = makeRepo();
+  const target = mkdtempSync(join(tmpdir(), 'zc-target-'));
+  writeFileSync(join(target, 'keep.txt'), 'keep');
+  const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+  rmSync(join(dir, '.zc'), { recursive: true });
+  symlinkSync(target, join(dir, '.zc'), 'dir');
+  const v = restoreZc(dir, snap, { saveDir: join(dir, '..', `zc-ev-${Math.random().toString(36).slice(2)}`) });
+  assert.ok(v.some((x) => x.kind === 'root' && x.change === 'replaced' && x.restored));
+  assert.ok(statSync(join(dir, '.zc')).isDirectory());
+  assert.equal(readFileSync(join(target, 'keep.txt'), 'utf8'), 'keep', 'the symlink target was not deleted');
+  assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8').length > 0, true, 'original files are back');
+});
+
+test('replacing .zc/ with an identical copy is not a change; a copy with different content is caught file by file', () => {
+  const { dir } = makeRepo();
+  const original = readFileSync(join(dir, '.zc/config.json'), 'utf8');
+  const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+  rmSync(join(dir, '.zc'), { recursive: true });
+  mkdirSync(join(dir, '.zc'));
+  writeFileSync(join(dir, '.zc/config.json'), original);
+  assert.deepEqual(restoreZc(dir, snap, { saveDir: join(dir, '..', 'ev-same') }), [], 'same state, nothing to report');
+  rmSync(join(dir, '.zc'), { recursive: true });
+  mkdirSync(join(dir, '.zc'));
+  writeFileSync(join(dir, '.zc/config.json'), '{"swapped":true}');
+  const v = restoreZc(dir, snap, { saveDir: join(dir, '..', 'ev-diff') });
+  assert.deepEqual(v.map((x) => [x.path, x.change, x.restored]), [['.zc/config.json', 'modified', true]]);
+  assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8'), original);
 });
