@@ -82,3 +82,4 @@ Commands and agents describe procedures that rely on tools workers do not have (
 - The npm package includes `vendor/` (bundled rules).
 - Empty `.zc/` folders are protected like files (deleted ones are recreated, new ones removed and reported). A lookup that meets an install mid-swap waits for it (up to 15 s, `ZC_ECC_WAIT_MS`) and then fails clearly; it never falls back to the bundled rules.
 - The `.zc` folder itself is tracked too: deleting, creating or replacing it (by a file) is detected, undone and reported as a violation. A `.zc` that is a symlink or a file blocks the run before a worker starts.
+- `.zc/` inspection fails closed: only "not there" (`ENOENT`/`ENOTDIR`) counts as missing. Any other error (for example a permission error) stops the run as `NEEDS_HUMAN` before a worker starts, or, after a worker ran, without claiming the folder was checked.

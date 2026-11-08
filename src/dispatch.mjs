@@ -177,7 +177,15 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
       const { prompt } = taskPrompt({ root, task, config, resumeNote });
       writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
-      const zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
+      let zcSnap;
+      try {
+        zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
+      } catch (error) {
+        attempt.outcome = 'not-started';
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          nextAction: `no worker was started: .zc/ could not be fully read to protect it (${error.code ?? 'error'}: ${error.message}). Fix its permissions and dispatch again.`
+        });
+      }
       if (zcSnap.uncopied.length) {
         attempt.outcome = 'not-started';
         return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
@@ -195,7 +203,16 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
 
       // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
-      const zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
+      let zcViolations;
+      try {
+        zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
+      } catch (error) {
+        attempt.outcome = 'zc-not-checked';
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          account: account.id,
+          nextAction: `after the worker ran, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
+        });
+      }
       if (zcViolations.length) attempt.zcViolations = zcViolations;
       const unrestored = zcViolations.filter((v) => !v.restored);
       if (unrestored.length) {

@@ -1,6 +1,6 @@
 {
   "name": "zora-conductor",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Claude Code as manager, Gemini (Antigravity) accounts as workers, ECC as the base. One worker at a time, automatic account failover, in-place edits.",
   "type": "module",
   "bin": { "zc": "bin/zc.mjs" },

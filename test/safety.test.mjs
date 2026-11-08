@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -222,9 +222,9 @@ test('empty .zc/ folders are protected too: deleted ones come back, new ones are
 test('the .zc root itself is protected: empty root deleted, absent root created, root swapped for a file', () => {
   const emptied = () => { const { dir } = makeRepo(); rmSync(join(dir, '.zc/config.json')); return dir; };
   const run = (dir, mutate) => {
-    const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+    const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-')));
     mutate(dir);
-    return restoreZc(dir, snap, { saveDir: join(dir, '..', `zc-ev-${Math.random().toString(36).slice(2)}`) });
+    return restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'zc-ev-')) });
   };
   // 1. empty .zc deleted
   const a = emptied();
@@ -246,11 +246,11 @@ test('the .zc root itself is protected: empty root deleted, absent root created,
 
 test('a .zc that is a symlink or a file cannot be protected, so it is reported before any worker starts', () => {
   const { dir } = makeRepo();
-  const snap = snapshotZc(dir, join(dir, '..', 'zc-copy-link'));
+  const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-link-')));
   assert.deepEqual(snap.uncopied, []);
   rmSync(join(dir, '.zc'), { recursive: true });
   writeFileSync(join(dir, '.zc'), 'x');
-  assert.match(snapshotZc(dir, join(dir, '..', 'zc-copy-file')).uncopied.join(), /\.zc \(a file/);
+  assert.match(snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-file-'))).uncopied.join(), /\.zc \(a file/);
 });
 
 test('a .zc that is a real symlink blocks the run: no worker starts', async () => {
@@ -271,10 +271,10 @@ test('a worker that swaps .zc/ for a symlink is undone without touching the link
   const { dir } = makeRepo();
   const target = mkdtempSync(join(tmpdir(), 'zc-target-'));
   writeFileSync(join(target, 'keep.txt'), 'keep');
-  const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+  const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-')));
   rmSync(join(dir, '.zc'), { recursive: true });
   symlinkSync(target, join(dir, '.zc'), 'dir');
-  const v = restoreZc(dir, snap, { saveDir: join(dir, '..', `zc-ev-${Math.random().toString(36).slice(2)}`) });
+  const v = restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'zc-ev-')) });
   assert.ok(v.some((x) => x.kind === 'root' && x.change === 'replaced' && x.restored));
   assert.ok(statSync(join(dir, '.zc')).isDirectory());
   assert.equal(readFileSync(join(target, 'keep.txt'), 'utf8'), 'keep', 'the symlink target was not deleted');
@@ -284,15 +284,58 @@ test('a worker that swaps .zc/ for a symlink is undone without touching the link
 test('replacing .zc/ with an identical copy is not a change; a copy with different content is caught file by file', () => {
   const { dir } = makeRepo();
   const original = readFileSync(join(dir, '.zc/config.json'), 'utf8');
-  const snap = snapshotZc(dir, join(dir, '..', `zc-copy-${Math.random().toString(36).slice(2)}`));
+  const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-')));
   rmSync(join(dir, '.zc'), { recursive: true });
   mkdirSync(join(dir, '.zc'));
   writeFileSync(join(dir, '.zc/config.json'), original);
-  assert.deepEqual(restoreZc(dir, snap, { saveDir: join(dir, '..', 'ev-same') }), [], 'same state, nothing to report');
+  assert.deepEqual(restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'ev-same-')) }), [], 'same state, nothing to report');
   rmSync(join(dir, '.zc'), { recursive: true });
   mkdirSync(join(dir, '.zc'));
   writeFileSync(join(dir, '.zc/config.json'), '{"swapped":true}');
-  const v = restoreZc(dir, snap, { saveDir: join(dir, '..', 'ev-diff') });
+  const v = restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'ev-diff-')) });
   assert.deepEqual(v.map((x) => [x.path, x.change, x.restored]), [['.zc/config.json', 'modified', true]]);
   assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8'), original);
+});
+
+const canTestPermissions = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+test('an unreadable .zc/ folder stops the run before any worker starts (fail closed)', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  mkdirSync(join(dir, '.zc/private'));
+  writeFileSync(join(dir, '.zc/private/notes.md'), 'n');
+  chmodSync(join(dir, '.zc/private'), 0o000);
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'x' } });
+  try {
+    const r = await dispatch({ root: dir, task: scoped(), config });
+    assert.equal(r.status, 'NEEDS_HUMAN');
+    assert.match(r.nextAction, /could not be fully read.*EACCES/);
+    assert.equal(existsSync(join(g1.profileDir, 'calls.log')), false, 'the worker never ran');
+  } finally {
+    chmodSync(join(dir, '.zc/private'), 0o755);
+  }
+});
+
+test('snapshot errors other than "missing" are thrown, not treated as an empty .zc/', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, () => {
+  const { dir } = makeRepo();
+  chmodSync(join(dir, '.zc'), 0o000);
+  try {
+    assert.throws(() => snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-perm-'))), /EACCES/);
+  } finally {
+    chmodSync(join(dir, '.zc'), 0o755);
+  }
+  rmSync(join(dir, '.zc'), { recursive: true });
+  assert.equal(snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-missing-'))).rootKind, 'missing', 'a truly absent .zc is still fine');
+});
+
+test('if .zc/ becomes unreadable during the run, the result is NEEDS_HUMAN, never a clean pass', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, () => {
+  const { dir } = makeRepo();
+  mkdirSync(join(dir, '.zc/sub'));
+  const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-later-')));
+  chmodSync(join(dir, '.zc/sub'), 0o000);
+  try {
+    assert.throws(() => restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'zc-ev-later-')) }), /EACCES/);
+  } finally {
+    chmodSync(join(dir, '.zc/sub'), 0o755);
+  }
 });

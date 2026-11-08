@@ -36,9 +36,14 @@ export function sameState(a, b) {
 
 export const describeState = (fp) => (fp === 'missing' ? 'absent' : fp.startsWith('file:') ? 'a file' : fp.startsWith('link:') ? 'a symlink' : fp);
 
+/** Only "it is not there" counts as missing; permission and other errors must stop the caller. */
+const isMissing = (error) => error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
+
 /** What `.zc` itself is: missing, dir, link or file. */
 const rootKind = (root) => {
-  const st = (() => { try { return lstatSync(resolve(root, '.zc')); } catch { return null; } })();
+  const st = (() => {
+    try { return lstatSync(resolve(root, '.zc')); } catch (error) { if (isMissing(error)) return null; throw error; }
+  })();
   return !st ? 'missing' : st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file';
 };
 
@@ -47,11 +52,11 @@ function walkZc(root) {
   const out = { files: {}, dirs: new Set() };
   const visit = (rel) => {
     let names;
-    try { names = readdirSync(resolve(root, rel)); } catch { return; }
+    try { names = readdirSync(resolve(root, rel)); } catch (error) { if (isMissing(error)) return; throw error; }
     for (const name of names) {
       const child = `${rel}/${name}`;
       let st;
-      try { st = lstatSync(resolve(root, child)); } catch { continue; }
+      try { st = lstatSync(resolve(root, child)); } catch (error) { if (isMissing(error)) continue; throw error; }
       if (st.isDirectory()) { out.dirs.add(child); visit(child); } else out.files[child] = fingerprint(root, child);
     }
   };
