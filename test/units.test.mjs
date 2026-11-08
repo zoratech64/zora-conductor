@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as accounts from '../src/accounts.mjs';
-import { agyRunArgs, parseAgyOutput, parseUsage } from '../src/agy.mjs';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { agyRunArgs, isolationMode, launchPlan, parseAgyOutput, parseUsage } from '../src/agy.mjs';
 import { parseArgs } from '../src/args.mjs';
 import { classify, parseResetHint } from '../src/classify.mjs';
 import { globToRegExp, isForbidden, matches, partitionByScope } from '../src/scope.mjs';
@@ -130,4 +132,29 @@ test('accounts: sticky pick, LRU fallback, cooldown, blocked, next-available', (
   assert.equal(accounts.nextAvailableAt(now), now + 30_000);
   assert.throws(() => accounts.addAccount('a'), /already exists/);
   assert.throws(() => accounts.addAccount('bad id'), /must be/);
+});
+
+test('isolation: only Linux gets a private D-Bus session, and ZC_ISOLATION=none turns it off', () => {
+  assert.equal(isolationMode('linux', {}), 'dbus');
+  assert.equal(isolationMode('linux', { ZC_ISOLATION: 'none' }), 'none');
+  assert.equal(isolationMode('win32', {}), 'none');
+  assert.equal(isolationMode('darwin', {}), 'none');
+});
+
+test('isolation: launch plan wraps agy, gives it a private HOME and drops the shared bus variables', (t) => {
+  makeHome();
+  const account = accounts.addAccount('iso1');
+  const spec = { command: '/x/agy', prefix: [] };
+  const plain = launchPlan(account, spec, ['-p', '/usage'], { mode: 'none', baseEnv: { A: '1' } });
+  assert.deepEqual([plain.command, plain.args, plain.isolated], ['/x/agy', ['-p', '/usage'], false]);
+  let plan;
+  try { plan = launchPlan(account, spec, ['-p', '/usage'], { mode: 'dbus', baseEnv: { A: '1', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus', GNOME_KEYRING_CONTROL: '/run/user/1000/keyring', SSH_AUTH_SOCK: '/s' } }); }
+  catch (error) { t.skip(String(error.message)); return; }
+  assert.match(plan.command, /dbus-run-session$/);
+  assert.deepEqual(plan.args, ['--', '/x/agy', '-p', '/usage']);
+  assert.equal(plan.env.HOME, join(account.profileDir, 'home'));
+  assert.equal(plan.env.XDG_RUNTIME_DIR, join(account.profileDir, 'run'));
+  for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'GNOME_KEYRING_CONTROL', 'SSH_AUTH_SOCK']) assert.equal(plan.env[name], undefined);
+  assert.ok(existsSync(plan.env.HOME) && existsSync(plan.env.XDG_RUNTIME_DIR));
+  assert.equal(plan.env.A, '1');
 });

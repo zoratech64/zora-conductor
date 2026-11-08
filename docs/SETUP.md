@@ -11,6 +11,8 @@ Do these once per machine, then once per project. The steps are the same on Ubun
 | Claude Code (signed in) | follow Anthropic's install guide, then `claude` once to sign in | same |
 | Antigravity CLI (`agy`) | https://antigravity.google/docs/cli/install/ | same (installs `agy.exe`) |
 
+Ubuntu also needs `dbus-run-session` (package `dbus`, normally installed): `zc` uses it to keep each Gemini account's login separate.
+
 Check: `node --version` (22 or newer), `git --version`, `claude --version`, `agy --version`.
 
 If `agy` is installed somewhere unusual, set `ZC_AGY` to its full path.

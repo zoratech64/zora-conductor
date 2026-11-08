@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import * as accounts from './accounts.mjs';
-import { checkAccount, findAgy, hasTokenFile, loginAccount } from './agy.mjs';
+import { checkAccount, findAgy, hasTokenFile, isolationMode, loginAccount } from './agy.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
@@ -120,8 +120,8 @@ async function verifyAccount(account) {
     accounts.updateAccount(account.id, { status: 'needs-login', holdReason: r.text.slice(0, 200) });
     console.log(`zc: ${account.id} NOT signed in — ${r.error || r.text || 'no output'}`);
   }
-  if (!hasTokenFile(account.profileDir)) {
-    console.log(`zc: warning — no token file found inside ${account.profileDir}. If this agy version stores credentials in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md before adding more.`);
+  if (isolationMode() === 'none' && !hasTokenFile(account.profileDir)) {
+    console.log(`zc: warning — isolation is off and no token file was found inside ${account.profileDir}. If agy keeps its login in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md.`);
   }
 }
 
@@ -189,6 +189,12 @@ async function cmdDoctor(argv) {
     add('agy (Antigravity CLI)', false, '', error.message);
   }
   const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
+  if (isolationMode() === 'dbus') {
+    const dbus = await run('which', ['dbus-run-session']);
+    add('account isolation (dbus-run-session)', dbus.code === 0, dbus.stdout.trim(), 'sudo apt install dbus  (each account needs its own private D-Bus session)');
+  } else if (process.platform === 'linux') {
+    add('account isolation', false, 'ZC_ISOLATION=none', 'unset ZC_ISOLATION so accounts do not share one keyring login', 'warn');
+  }
   const claude = await run(lookup, ['claude']);
   add('claude (Claude Code)', claude.code === 0, claude.stdout.trim().split(/\r?\n/)[0] ?? '', 'install Claude Code and sign in');
   const list = accounts.listAccounts();

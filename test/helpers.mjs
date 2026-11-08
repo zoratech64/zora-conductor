@@ -34,10 +34,11 @@ export function makeRepo(configExtra = {}) {
 }
 
 /** Isolated machine-global state, with the fake agy wired in. */
-export function makeHome() {
+export function makeHome({ isolation = 'none' } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'zc-home-'));
   process.env.ZC_HOME = home;
   process.env.ZC_AGY = FAKE_AGY;
+  process.env.ZC_ISOLATION = isolation;
   return home;
 }
 

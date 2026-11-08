@@ -2,28 +2,26 @@
 
 Each worker account needs its own sign-in that does not overwrite the others. `zc` gives every account a profile folder and starts `agy` with `--gemini_dir <profile>` and `GEMINI_FORCE_FILE_STORAGE=true`, so the OAuth token should stay inside that folder.
 
-## The open question
+## What was found on Ubuntu (agy 1.5.3)
 
-The two projects this was built from report different things:
+`agy` keeps its Google login in the desktop keyring (Secret Service on your user D-Bus session), not in the `--gemini_dir` folder. Tested on a ThinkPad running Ubuntu:
 
-- **Pirun** (tested with agy 1.1.21) relies on exactly this setup and reports that accounts run side by side. It refuses to log in if agy would use the shared OS keyring.
-- **zora-ai-orchestrator** (documented against agy 1.4.12 on Linux) reports that a separate `HOME` or `--gemini_dir` still talks to the host user's Secret Service over D-Bus, so every account becomes the same identity. Its fix was one Linux user per account plus a private D-Bus session.
+- `zc account add g1` and `g2` both started already signed in as the same Google account, with no browser.
+- Unsetting `DBUS_SESSION_BUS_ADDRESS` and using a private `HOME` did **not** help: agy still found the real session bus at `/run/user/<uid>/bus`.
+- Running agy inside `dbus-run-session` with a private `HOME` and `XDG_RUNTIME_DIR` did give a signed-out agy (a fresh sign-in prompt).
 
-Both are first-hand reports about different agy versions on different systems. Which one holds for **your** agy on **your** Ubuntu machine is something only a test can show. Windows was the main platform for Pirun's tests.
+So on Linux `zc` now runs every agy call (sign-in, check, dispatch) inside its own private D-Bus session, with `HOME` and `XDG_RUNTIME_DIR` under that account's profile folder. No sudo and no extra OS users. It needs the `dbus-run-session` command (`sudo apt install dbus`; `zc doctor` checks it). `ZC_ISOLATION=none` switches this off. Windows and macOS are unchanged and still unverified.
 
-## Five-minute check (do it before adding a third account)
+Accounts that were signed in before this change are not isolated: run `zc account remove g1`, `zc account remove g2`, then add them again.
 
-1. `zc account add g1`, sign in with Google account A. Exit agy.
-2. `zc account add g2`, sign in with Google account B. Exit agy.
-3. `zc account check`. Both should print OK, and **neither** should print the "no token file found" warning.
-4. Look inside the profile folders (`zc account list` shows the state folder; profiles are under `profiles/g1` and `profiles/g2`). Each should contain `antigravity-cli/antigravity-oauth-token`.
-5. Sign g1 in once more (`zc account login g1`) and check g2 again. If g2 now fails or the two accounts show identical quota windows, they share one identity.
+## Check (do it before adding a third account)
 
-If any step fails, the accounts are **not** isolated. Do not rotate real work across them.
+1. `zc account add g1`: sign in with Google account A, then exit agy. When agy prints the sign-in URL, open it in a private browser window so the browser's own Google session does not pick the account for you.
+2. `zc account add g2`: same, with account B.
+3. `zc account check` must show both OK **in separate runs of zc**. That proves the login survives after the private session ends.
+4. Compare the quota windows, or run `agy` by hand for each account and look at the signed-in email. Sign g1 in again later and make sure g2 is still its own account.
 
-## If they share an identity (Linux)
-
-Use one OS user per account, each with its own D-Bus session, as `zora-ai-orchestrator` does (see `bin/zora-worker-launcher.sh` and the "Hardened Manual Setup" section of its README). That needs `sudo`, a narrow sudoers rule, and a launcher script. `zc` 0.1 does not automate it; it is the first item for the next version. Until then, the options are: run fewer accounts, use accounts on separate machines, or do the OS-user setup by hand and point `ZC_AGY` at a wrapper script that runs `agy` as that user.
+If step 3 fails (signed out on the next run), the private keyring is not persisting. Tell me the exact message and I will switch to a different storage approach.
 
 ## What `zc` does with account problems
 

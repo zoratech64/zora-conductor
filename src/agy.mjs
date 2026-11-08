@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { run } from './proc.mjs';
 
@@ -49,6 +49,49 @@ export function findAgy() {
  */
 export function agyEnv() {
   return { ...process.env, NO_COLOR: '1', GEMINI_FORCE_FILE_STORAGE: 'true' };
+}
+
+
+/**
+ * Linux account isolation. agy keeps its OAuth login in the desktop keyring (Secret Service on the
+ * user's D-Bus session), so every --gemini_dir profile ends up as the same Google account. Each
+ * account therefore runs inside its own private D-Bus session with its own HOME and runtime
+ * folder; the keyring it talks to is then private to that account.
+ * ZC_ISOLATION=none turns this off. Windows and macOS are unchanged.
+ */
+let dbusRunPath;
+function dbusRun() {
+  if (dbusRunPath === undefined) {
+    try { dbusRunPath = execFileSync('which', ['dbus-run-session'], { encoding: 'utf8' }).trim() || null; }
+    catch { dbusRunPath = null; }
+  }
+  return dbusRunPath;
+}
+
+export function isolationMode(platform = process.platform, env = process.env) {
+  const wanted = (env.ZC_ISOLATION ?? 'auto').toLowerCase();
+  if (wanted === 'none' || platform !== 'linux') return 'none';
+  return 'dbus';
+}
+
+/** Build the final command line and environment for one agy call of one account. */
+export function launchPlan(account, spec, args, { mode = isolationMode(), baseEnv = agyEnv() } = {}) {
+  if (mode !== 'dbus') return { command: spec.command, args, env: baseEnv, isolated: false };
+  const runner = dbusRun();
+  if (!runner) {
+    throw new Error(
+      'account isolation needs dbus-run-session (Ubuntu: sudo apt install dbus). ' +
+      'Without it every agy profile shares one keyring login. Set ZC_ISOLATION=none to skip this check at your own risk.'
+    );
+  }
+  const home = join(account.profileDir, 'home');
+  const runtime = join(account.profileDir, 'run');
+  for (const dir of [home, runtime]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(runtime, 0o700);
+  const env = { ...baseEnv, HOME: home, XDG_RUNTIME_DIR: runtime };
+  for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE', 'GNOME_KEYRING_CONTROL',
+    'SSH_AUTH_SOCK', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) delete env[name];
+  return { command: runner, args: ['--', spec.command, ...args], env, isolated: true };
 }
 
 const PERMISSION_ARGS = {
@@ -128,7 +171,8 @@ export async function runAgy({ account, prompt, cwd, timeoutSec, permissions, mo
     ...agyRunArgs({ profileDir: account.profileDir, model, effort, workspace: cwd, permissions, timeoutSec: timeoutSec + 120 })
   ];
   const input = `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
-  const result = await run(spec.command, args, { cwd, env: agyEnv(), input, timeoutMs: timeoutSec * 1000 });
+  const plan = launchPlan(account, spec, args);
+  const result = await run(plan.command, plan.args, { cwd, env: plan.env, input, timeoutMs: timeoutSec * 1000 });
   return { ...result, parsed: parseAgyOutput(`${result.stdout}\n${result.stderr}`) };
 }
 
@@ -154,7 +198,8 @@ export function parseUsage(text) {
 export async function checkAccount(account) {
   const spec = findAgy();
   const args = [...spec.prefix, '--gemini_dir', account.profileDir, '-p', '/usage'];
-  const result = await run(spec.command, args, { env: agyEnv(), timeoutMs: 60_000 });
+  const plan = launchPlan(account, spec, args);
+  const result = await run(plan.command, plan.args, { env: plan.env, timeoutMs: 60_000 });
   const text = `${result.stdout}\n${result.stderr}`;
   const limits = parseUsage(text);
   const authFailed = /authentication required|please (?:sign|log) ?in|not authenticated/i.test(text);
@@ -165,9 +210,10 @@ export async function checkAccount(account) {
 export function loginAccount(account) {
   const spec = findAgy();
   return new Promise((resolveLogin) => {
-    const child = spawn(spec.command, [...spec.prefix, '--gemini_dir', account.profileDir], {
-      stdio: 'inherit', env: agyEnv(), windowsHide: false
-    });
+    let plan;
+    try { plan = launchPlan(account, spec, [...spec.prefix, '--gemini_dir', account.profileDir]); }
+    catch (error) { resolveLogin({ code: -1, error: error.message }); return; }
+    const child = spawn(plan.command, plan.args, { stdio: 'inherit', env: plan.env, windowsHide: false });
     child.on('error', (error) => resolveLogin({ code: -1, error: error.message }));
     child.on('close', (code) => resolveLogin({ code }));
   });

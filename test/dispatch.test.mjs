@@ -289,3 +289,14 @@ test('git state is left sane after a rollback (no stray index entries)', async (
   assert.equal(git(dir, 'status', '--porcelain').replace(/\?\? \.zc\/\n?/, '').trim(), '');
   assert.equal(readFileSync(join(dir, 'src/keep.txt'), 'utf8'), 'keep\n');
 });
+
+test('isolated launch: a full dispatch works through the private D-Bus session', async (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux only');
+  makeHome({ isolation: 'auto' });
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/iso.txt': 'iso' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  if (r.status !== 'OK' && /dbus-run-session/.test(JSON.stringify(r))) return t.skip('dbus-run-session not available');
+  assert.equal(r.status, 'OK');
+  assert.deepEqual(r.changed, ['src/iso.txt']);
+});

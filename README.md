@@ -36,7 +36,7 @@ cd your-project && zc init && git add .zc && git commit -m "chore: add zc config
 #   /zc:orchestrate add password reset to the auth module
 ```
 
-**Before you add a second account, read [docs/ACCOUNTS.md](docs/ACCOUNTS.md).** The two reference projects disagree on whether per-profile folders are enough to keep accounts separate on Linux, and the check takes five minutes.
+**Before you add a second account, read [docs/ACCOUNTS.md](docs/ACCOUNTS.md).** On Linux, agy keeps its login in the shared desktop keyring, so `zc` runs each account in its own private D-Bus session (needs `dbus-run-session`).
 
 ## What you get
 
@@ -90,7 +90,7 @@ Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
 
 ## What is and is not verified
 
-Verified here (Linux, 35 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, reject safety, ECC rule injection, plugin manifest validation.
+Verified here (Linux, 38 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, reject safety, ECC rule injection, plugin manifest validation.
 
 **Not verified yet, because it needs real accounts and machines:**
 
