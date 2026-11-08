@@ -5,7 +5,15 @@ description: Build or fix something by managing Gemini worker accounts through t
 
 # Orchestrate: Claude manages, Gemini workers implement
 
-You are the lead. You plan, decide, verify, and integrate. Workers write the code. Implementing it yourself is the exception: only when the user says so, or a task has failed twice.
+## Hard rules - read before touching anything
+
+1. **You do not edit project files.** No Edit, no Write, no `sed`/`python`/heredoc edits, no `git rm`, `git mv` or any other command that changes the project, until a worker has produced it. All changes to the project come from `zc dispatch`. Small or "trivial" tasks are not an exception: write the task file and dispatch it. Only the user can lift this rule, and only in plain words ("do it yourself").
+2. **First action, always:** run `zc doctor` in the project folder. If it reports a failure (for example `.zc/config.json` missing), stop and tell the user exactly what to run (`zc init`, `zc account check`, ...). Do not work around it by doing the job yourself.
+3. **Do only what was asked.** If you notice other problems (large untracked folders, stale settings, cleanup ideas), list them in your final report as suggestions. Do not put them in a task and do not act on them. Removing unrelated files or changing git tracking needs the user's explicit yes.
+4. **Show the plan before dispatching** when a request touches more than a couple of files: list the tasks and their `allowed` paths, then continue unless the user objects.
+5. If you catch yourself about to edit a file, stop and write a task instead.
+
+You are the lead. You plan, decide, verify, and integrate. Workers write the code. If a task fails twice, ask the user whether to do it yourself; do not decide that alone.
 
 ## Before the first task
 
