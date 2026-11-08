@@ -1,19 +1,55 @@
 name: ci
+
 on:
   push:
   pull_request:
+
+# Read-only: CI only checks out the code and runs the project's own scripts.
+permissions:
+  contents: read
+
 jobs:
   test:
+    # Ubuntu and Windows are required. macOS runs for information only (CI-only):
+    # its result is shown, but it never fails the workflow and never makes macOS "supported".
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}${{ matrix.os == 'macos-latest' && ' (CI-only, non-blocking)' || '' }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - run: git config --global init.defaultBranch main
+      # The project has no dependencies and no lockfile, so there is nothing to install.
       - run: npm run check
-      - run: npm test
+      # The repository's own test script. NODE_OPTIONS selects the TAP reporter on every Node
+      # version (Node 24 ignores a --test-reporter flag placed after the test files); the output
+      # is kept so the next step can read skip reasons.
+      - name: npm test
+        shell: bash
+        env:
+          NODE_OPTIONS: --test-reporter=tap
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/test-output.tap"
+      # The .zc/ permission tests need a non-root POSIX user. GitHub's Linux runner is one,
+      # so on Linux a skip means the safety tests did not really run: fail instead.
+      - name: Linux - permission tests must run, not skip
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/test-output.tap"
+          if ! grep -qE '^(# |ℹ )tests [0-9]+$' "$out"; then
+            echo "::error::Could not find the test summary in the npm test output."
+            exit 1
+          fi
+          if grep -F 'needs a non-root POSIX user' "$out"; then
+            echo "::error::Permission tests were skipped on Linux; they must run here."
+            exit 1
+          fi
+          echo "Permission tests ran (none skipped)."
+          grep -E '^(# |ℹ )skipped [0-9]+$' "$out"

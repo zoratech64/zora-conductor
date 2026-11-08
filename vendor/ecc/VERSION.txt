@@ -1,5 +1,6 @@
 ECC rules bundled from https://github.com/affaan-m/ECC
-version: 2.2.3
+snapshot: commit 89bf930c9fd201a7f1e74ed03e03a7d4b99da0c9 on ECC main (2026-10-11; git describe: v2.2.3-674-g89bf930c)
+release: none. This is an untagged development snapshot, 674 commits after the v2.2.3 tag, and no ECC tag contained it as of ECC main commit d2ef268 (2026-11-06). ECC's own manifests at this commit still say 2.2.3, but these files are not the v2.2.3 release: four of them differ from the v2.2.3 tag.
 license: MIT (see LICENSE)
 bundled packs: common, dart, typescript (the rest of ECC rules/ is not copied; set ecc.path to a full ECC checkout to use other packs)
 the full ECC (skills, agents, commands, hooks) is installed separately in Claude Code.

@@ -110,4 +110,6 @@ Other limits: only the `agy` adapter exists (a plain Gemini CLI adapter is the n
 
 Built from scratch after reading two projects: `zora-ai-orchestrator` (clean-checkout, scope and HEAD guards; Linux keyring isolation) and `Pirun` (per-account `agy` profiles, failure classification, quota windows). Their ideas are reused; no code was copied (the only third-party material is ECC's `rules/` folder, bundled under `vendor/ecc/` with its MIT license), and the Antigravity binary patcher in `zora-ai-orchestrator` was deliberately left out.
 
-MIT licensed.
+## Licence
+
+zora-conductor is released under the MIT licence (see [LICENSE](LICENSE)). It bundles third-party material, listed with its source, version, licence and copyright in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): the `common`, `dart` and `typescript` rule packs of [ECC](https://github.com/affaan-m/ECC) under `vendor/ecc/`, MIT licensed, with their licence text in `vendor/ecc/LICENSE`.

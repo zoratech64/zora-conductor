@@ -7,7 +7,7 @@
       "name": "zc",
       "source": "./",
       "description": "Manager workflow for the zc CLI: plan with ECC, dispatch scoped tasks to Gemini workers one at a time, review and verify every result.",
-      "version": "0.1.7",
+      "version": "0.2.0-alpha.1",
       "license": "MIT",
       "category": "workflow"
     }

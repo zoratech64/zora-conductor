@@ -1,0 +1,224 @@
+name: release
+
+# Prepares a GitHub Release. It never publishes one: a maintainer reviews the draft and
+# publishes it by hand (docs/RELEASING.md).
+#
+# - Push of a v* tag: checks that the tag is exactly "v" + the package version, extracts that
+#   version's CHANGELOG.md section, runs the required test matrix, and only then creates a
+#   DRAFT release for the existing tag.
+# - Manual run (workflow_dispatch): a dry run of the same checks, tests and release notes for
+#   the version in the chosen branch's manifests. It prints the notes and never creates, edits
+#   or publishes a release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Read-only by default. Only the draft job below gets write access.
+permissions:
+  contents: read
+
+# One run per tag; a manual dry run gets its own group. Nothing is ever cancelled.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag, version and changelog
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.notes.outputs.tag }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Syntax check and the R-01 version check (all three manifests agree on a valid version).
+      - run: npm run check
+      - name: Check the tag and build the release notes
+        id: notes
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # The version all manifests agree on, from the R-01 checker (no second version policy here).
+          version="$(node --input-type=module -e '
+            const { checkVersions } = await import("./scripts/check-versions.mjs");
+            const result = checkVersions(".");
+            if (!result.ok) { for (const p of result.problems) console.error(p); process.exit(1); }
+            console.log(result.version);
+          ')"
+          expected="v${version}"
+          printf 'Package version: %s\nExpected tag:    %s\n' "$version" "$expected"
+
+          # The tag must be exactly "v" + the package version. This also rejects malformed tags.
+          if [[ "$REF_TYPE" == tag ]]; then
+            printf 'Tag:             %s\n' "$REF_NAME"
+            if [[ "$REF_NAME" != "$expected" ]]; then
+              echo "::error::The tag does not match the package version (expected tag shown above)."
+              exit 1
+            fi
+          elif [[ "$EVENT_NAME" == push ]]; then
+            echo "::error::A release run started by a push must be for a tag."
+            exit 1
+          else
+            printf 'Dry run on branch %s: no tag to compare.\n' "$REF_NAME"
+          fi
+
+          # This version's CHANGELOG.md section: from "## [<version>]" up to the next "## " heading
+          # or the link references at the end. Exactly one such heading must exist.
+          if ! section="$(tr -d '\r' < CHANGELOG.md | awk -v heading="## [${version}]" '
+            index($0, heading) == 1 && (length($0) == length(heading) || substr($0, length(heading) + 1, 1) == " ") {
+              count++
+              if (count == 1) { on = 1; next }
+            }
+            on && (/^## / || /^\[[^]]+\]: /) { on = 0 }
+            on { print }
+            END { if (count != 1) exit 3 }
+          ')"; then
+            echo "::error::CHANGELOG.md must contain exactly one section for this version (## [<version>])."
+            exit 1
+          fi
+          section="$(printf '%s\n' "$section" | sed -e '/[^[:space:]]/,$!d')"
+          if [[ -z "${section//[[:space:]]/}" ]]; then
+            echo "::error::The CHANGELOG.md section for this version is empty."
+            exit 1
+          fi
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            if [[ "$version" == *-* ]]; then
+              # alpha, beta and rc: testing-only label, platform status and known limitations.
+              # Written from a template, so it is marked for human verification before publishing.
+              cat <<'TEMPLATE'
+          > [!WARNING]
+          > **Maintainer: verify this block before publishing, then delete this note.** The release workflow wrote it from a template, not from test results. State each platform exactly as tested on a real machine; a platform without such a test is "untested". Check the known limitations against this release.
+
+          **For testing only.** This is a pre-release.
+
+          **Platform status:** Linux: not yet confirmed. Windows: untested. macOS: untested.
+
+          This draft was created only after the required CI jobs (Ubuntu and Windows, Node 22 and 24) passed on the tagged commit. CI is not a real-machine test and does not make any platform supported; macOS runs in CI for information only.
+
+          **Known limitations:**
+
+          - The Claude plugin does not yet run a project-local CLI.
+
+          TEMPLATE
+            fi
+            printf '## Changes in %s\n\n%s\n' "$version" "$section"
+          } > "$notes"
+
+          # Show the notes without letting their text act as workflow commands.
+          stop="notes-$(date +%s%N)-$RANDOM"
+          echo "::stop-commands::$stop"
+          cat "$notes"
+          echo "::$stop::"
+          cat "$notes" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            printf 'tag=%s\n' "$expected"
+            printf 'notes=%s\n' "$(base64 -w0 < "$notes")"
+          } >> "$GITHUB_OUTPUT"
+
+  # The required CI matrix, kept identical to .github/workflows/ci.yml (change both together).
+  # Ubuntu and Windows must pass. macOS runs for information only (CI-only, non-blocking).
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}${{ matrix.os == 'macos-latest' && ' (CI-only, non-blocking)' || '' }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: git config --global init.defaultBranch main
+      # The project has no dependencies and no lockfile, so there is nothing to install.
+      - run: npm run check
+      # The repository's own test script. NODE_OPTIONS selects the TAP reporter on every Node
+      # version (Node 24 ignores a --test-reporter flag placed after the test files); the output
+      # is kept so the next step can read skip reasons.
+      - name: npm test
+        shell: bash
+        env:
+          NODE_OPTIONS: --test-reporter=tap
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/test-output.tap"
+      # The .zc/ permission tests need a non-root POSIX user. GitHub's Linux runner is one,
+      # so on Linux a skip means the safety tests did not really run: fail instead.
+      - name: Linux - permission tests must run, not skip
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/test-output.tap"
+          if ! grep -qE '^(# |ℹ )tests [0-9]+$' "$out"; then
+            echo "::error::Could not find the test summary in the npm test output."
+            exit 1
+          fi
+          if grep -F 'needs a non-root POSIX user' "$out"; then
+            echo "::error::Permission tests were skipped on Linux; they must run here."
+            exit 1
+          fi
+          echo "Permission tests ran (none skipped)."
+          grep -E '^(# |ℹ )skipped [0-9]+$' "$out"
+
+  # Creates the draft. Runs only for a pushed tag, and only when verify and every required test
+  # job succeeded (no status function in "if", so success() of all needs is implied).
+  # A manual dry run never reaches this job.
+  draft:
+    name: Create draft release (never published)
+    needs: [verify, test]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release for the existing tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          NOTES_B64: ${{ needs.verify.outputs.notes }}
+        run: |
+          set -euo pipefail
+
+          # Defence in depth: only a tag push, and only the tag verify checked.
+          if [[ "$EVENT_NAME" != push || "$REF_TYPE" != tag || -z "$TAG" || "$TAG" != "$REF_NAME" ]]; then
+            echo "::error::Not a verified tag push; no release is created."
+            exit 1
+          fi
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          printf '%s' "$NOTES_B64" | base64 -d > "$notes"
+          if [[ ! -s "$notes" ]]; then
+            echo "::error::No release notes were received from the verify job."
+            exit 1
+          fi
+
+          # One release per tag: stop if any release, draft or published, already uses this tag.
+          existing="$(gh api --paginate "repos/${GH_REPO}/releases?per_page=100" --jq '.[].tag_name')"
+          if grep -qxF -- "$TAG" <<< "$existing"; then
+            echo "::error::A release for this tag already exists; nothing was created or changed."
+            exit 1
+          fi
+
+          # --draft: never published by this workflow. --verify-tag: never creates a tag; fails if
+          # the tag does not exist. No --prerelease: the maintainer chooses that when publishing.
+          gh release create "$TAG" --draft --verify-tag --title "zora-conductor ${TAG#v}" --notes-file "$notes"
+          echo "Draft release created for the tag. Review it and publish it by hand (docs/RELEASING.md)."

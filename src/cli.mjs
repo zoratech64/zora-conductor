@@ -32,6 +32,9 @@ Accounts (machine-global):
   zc account check [<id>]                 verify sign-in and read quota windows
   zc account list | reset <id> | remove <id>
 
+Other:
+  zc --version                            print the zora-conductor version
+
 Dispatch exit codes: 0 done and verified | 1 failed/rejected/verify failed | 2 no capacity (all cooling) | 3 needs a human
 Options: --project <dir>  --json  --dry-run  --minutes <n>`;
 
@@ -39,6 +42,11 @@ function projectRoot(opts) {
   const root = G.toplevel(resolve(opts.project ?? process.cwd()));
   if (!root) throw new Error('not inside a git repository');
   return root;
+}
+
+/** The installed zora-conductor version, read from this package's own package.json. */
+function packageVersion() {
+  return JSON.parse(readFileSync(resolve(import.meta.dirname, '..', 'package.json'), 'utf8')).version;
 }
 
 const fmtTime = (ms) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '-');
@@ -314,6 +322,7 @@ export async function main(argv) {
   try {
     switch (command) {
       case undefined: case 'help': case '--help': case '-h': console.log(HELP); return 0;
+      case '--version': console.log(packageVersion()); return 0;
       case 'init': cmdInit(projectRoot(parseArgs(rest))); return 0;
       case 'account': await cmdAccount(rest); return 0;
       case 'dispatch': return await cmdDispatch(rest);
