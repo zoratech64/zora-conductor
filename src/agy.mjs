@@ -47,8 +47,17 @@ export function findAgy() {
  * keeps each account's OAuth token inside its own --gemini_dir instead of the
  * shared OS keyring (which would make every account the same identity).
  */
-export function agyEnv() {
-  return { ...process.env, NO_COLOR: '1', GEMINI_FORCE_FILE_STORAGE: 'true' };
+export function agyEnv(platform = process.platform, env = process.env) {
+  const out = { ...env, NO_COLOR: '1', GEMINI_FORCE_FILE_STORAGE: 'true' };
+  if (platform !== 'linux' && (env.ZC_ISOLATION ?? 'auto').toLowerCase() !== 'none') {
+    // On Windows (and macOS) agy ignores GEMINI_FORCE_FILE_STORAGE and keeps one shared login in the OS
+    // credential store. It does choose file storage inside --gemini_dir when it thinks it is in an SSH
+    // session (found by Pirun on agy 1.1.21, re-checked on 1.5.1: "Using file-based token storage because
+    // SSH session detected"). The values are only a hint; no SSH connection is made.
+    out.SSH_CLIENT = env.SSH_CLIENT || '127.0.0.1 1 1';
+    out.SSH_CONNECTION = env.SSH_CONNECTION || '127.0.0.1 1 127.0.0.1 1';
+  }
+  return out;
 }
 
 

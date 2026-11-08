@@ -8,7 +8,9 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- On Windows and macOS every account shared one agy login, because agy keeps its token in the OS credential store and ignores `--gemini_dir`. `zc` now sets local `SSH_CLIENT` and `SSH_CONNECTION` hints for agy, which makes it use file-based token storage inside the account's profile (found by Pirun; checked on agy 1.5.1). No SSH connection is made. `ZC_ISOLATION=none` turns it off. Accounts added before this change share the old login: run `zc account remove <id>` and `zc account add <id>` again.
 
 ## [0.2.0-alpha.1] - 2026-11-08
 
