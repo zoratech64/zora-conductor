@@ -112,11 +112,25 @@ export function restoreZc(root, snap, { saveDir }) {
     } catch { /* reported as not restored */ }
     violations.push(entry);
   }
-  // directories a worker created
+  // directories: recreate ones the worker deleted, remove (and report) ones it created
   const knownDirs = new Set(snap.dirs);
+  for (const dir of [...snap.dirs].sort()) {
+    if (now.dirs.has(dir)) continue;
+    const entry = { path: dir, change: 'removed', kind: 'dir', restored: false };
+    try {
+      mkdirSync(resolve(root, dir), { recursive: true });
+      entry.restored = true;
+    } catch { /* reported as not restored */ }
+    violations.push(entry);
+  }
   for (const dir of [...now.dirs].sort().reverse()) {
     if (knownDirs.has(dir)) continue;
-    try { rmdirSync(resolve(root, dir)); } catch { /* not empty or already gone */ }
+    const entry = { path: dir, change: 'added', kind: 'dir', restored: false };
+    try {
+      rmdirSync(resolve(root, dir));
+      entry.restored = true;
+    } catch { /* not empty: a file in it is reported separately */ }
+    violations.push(entry);
   }
   if (!snap.dirs.length && !Object.keys(snap.files).length) {
     try { rmdirSync(resolve(root, '.zc')); } catch { /* not empty or absent */ }

@@ -361,3 +361,36 @@ test('the npm package contains the bundled ECC rules', async () => {
   assert.ok(files.includes('vendor/ecc/rules/common/coding-style.md'));
   assert.ok(files.includes('vendor/ecc/LICENSE'));
 });
+
+test('a lookup during the swap waits for the install instead of picking bundled rules', async () => {
+  makeHome(); noEnv();
+  installFrom(fakeEcc());
+  const parent = dirname(installedEccDir());
+  const old = join(parent, '.ecc-old-9');
+  renameSync(installedEccDir(), old); // the moment between "old moved away" and "new moved in"
+  const { spawn } = await import('node:child_process');
+  const script = `
+    import { acquireLock } from ${JSON.stringify(new URL('../src/fsx.mjs', import.meta.url).href)};
+    import { renameSync } from 'node:fs';
+    const release = acquireLock(${JSON.stringify(join(parent, 'ecc-install.lock'))}, {});
+    console.log('locked');
+    setTimeout(() => { renameSync(${JSON.stringify(old)}, ${JSON.stringify(installedEccDir())}); release(); }, 600);`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((ok) => child.stdout.once('data', ok)); // the "installer" now holds the lock
+  assert.equal(eccRoot({ ecc: { path: '' } }).source, 'installed');
+  await new Promise((ok) => child.on('close', ok));
+});
+
+test('if an install holds the lock and never finishes, the lookup fails clearly instead of using bundled rules', async () => {
+  makeHome(); noEnv();
+  installFrom(fakeEcc());
+  const parent = dirname(installedEccDir());
+  renameSync(installedEccDir(), join(parent, '.ecc-old-9'));
+  const { acquireLock } = await import('../src/fsx.mjs');
+  const release = acquireLock(join(parent, 'ecc-install.lock'), {});
+  process.env.ZC_ECC_WAIT_MS = '300';
+  try {
+    assert.throws(() => eccRoot({ ecc: { path: '' } }), /ECC install is in progress/);
+  } finally { delete process.env.ZC_ECC_WAIT_MS; release(); }
+  assert.equal(eccRoot({ ecc: { path: '' } }).source, 'installed', 'once nothing is running the backup is restored');
+});

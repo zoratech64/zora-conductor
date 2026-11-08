@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { dispatch, rejectRun } from '../src/dispatch.mjs';
@@ -202,4 +202,18 @@ test('repair also refuses when you staged the worker result', async () => {
   git(dir, 'add', 'src/a.txt');
   const r2 = await dispatch({ root: dir, task: scoped(), config, repairOf: r1.runId });
   assert.equal(r2.status, 'NEEDS_HUMAN');
+});
+
+test('empty .zc/ folders are protected too: deleted ones come back, new ones are removed and reported', () => {
+  const { dir } = makeRepo();
+  mkdirSync(join(dir, '.zc/keepdir'), { recursive: true });
+  writeFileSync(join(dir, '.zc/a.md'), 'A');
+  const snap = snapshotZc(dir, join(dir, '.zc-copy-d'));
+  rmSync(join(dir, '.zc/keepdir'), { recursive: true });
+  mkdirSync(join(dir, '.zc/sneaky'));
+  const v = restoreZc(dir, snap, { saveDir: join(dir, '.zc-evidence-d') });
+  assert.deepEqual(v.map((x) => [x.path, x.change, x.kind, x.restored]).sort(),
+    [['.zc/keepdir', 'removed', 'dir', true], ['.zc/sneaky', 'added', 'dir', true]]);
+  assert.ok(existsSync(join(dir, '.zc/keepdir')));
+  assert.ok(!existsSync(join(dir, '.zc/sneaky')));
 });

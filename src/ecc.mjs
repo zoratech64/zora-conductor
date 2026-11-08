@@ -190,6 +190,22 @@ export function recoverInterrupted(parent = dirname(installedEccDir()), { locked
   }
 }
 
+const hasBackup = (parent) => existsSync(parent) && readdirSync(parent).some((n) => n.startsWith('.ecc-old-'));
+
+/**
+ * While an install swaps folders the installed ECC is briefly absent. Wait for it instead of silently
+ * choosing different rules; fail clearly if it does not come back.
+ */
+function waitForInstall(timeoutMs = Number(process.env.ZC_ECC_WAIT_MS) || 15_000) {
+  const parent = dirname(installedEccDir());
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(installedEccDir()) && hasBackup(parent)) {
+    if (recoverInterrupted()) return;
+    if (Date.now() > deadline) throw new Error(`an ECC install is in progress (or was interrupted) and the installed ECC is not available yet; retry in a moment, or run \`zc ecc install\`. Backup: ${parent}`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+}
+
 export const readInstalled = () => {
   try { return JSON.parse(readFileSync(join(installedEccDir(), 'INSTALLED.json'), 'utf8')); } catch { return null; }
 };
@@ -201,6 +217,7 @@ export const readInstalled = () => {
  */
 export function eccRoot(config) {
   recoverInterrupted();
+  waitForInstall();
   const explicit = config.ecc.path ? { dir: resolve(config.ecc.path), source: 'configured' }
     : process.env.ZC_ECC_PATH ? { dir: resolve(process.env.ZC_ECC_PATH), source: 'ZC_ECC_PATH' }
       : existsSync(installedEccDir()) ? { dir: installedEccDir(), source: 'installed' } : null;
