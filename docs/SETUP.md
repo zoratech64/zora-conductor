@@ -34,7 +34,7 @@ or inside Claude Code:
 
 Review ECC's hooks before enabling them; its `minimal` profile has none. Confirm with `/plugin list`.
 
-Workers use Gemini, which does not run ECC's hooks, so `zc` pastes ECC's coding rules into each worker prompt. A copy of ECC's `common`, `dart` and `typescript` rule packs (MIT, version in `vendor/ecc/VERSION.txt`) ships inside zora-conductor and is used by default; there is nothing to clone. To use a newer or customised ECC instead, set `ecc.path` in `.zc/config.json` (or `ZC_ECC_PATH`) to a checkout.
+Workers use Gemini, which does not run ECC's hooks, so `zc` pastes ECC's coding rules into each worker prompt. A copy of ECC's `common`, `dart` and `typescript` rule packs (MIT, version in `vendor/ecc/VERSION.txt`) ships inside zora-conductor and is used by default; there is nothing to clone. For the full catalog (314 skills, 71 agents, 98 commands) run `zc ecc install` once per machine; it downloads ECC into zc's state folder, and `zc ecc search <words>` / `zc ecc show skill:<name>` browse it. Any entry can then be given to a worker with `ecc:` in a task or `ecc.assets` in `.zc/config.json`. `zc ecc install --ref <tag or commit>` makes the install reproducible; without `--ref` it follows the default branch and `zc ecc status` says so. The install is all-or-nothing (validated, staged, swapped in), so a failed update keeps the previous copy. To use a newer or customised ECC instead, set `ecc.path` in `.zc/config.json` (relative paths mean relative to the project) or `ZC_ECC_PATH` to a checkout. Precedence: `ecc.path`, `ZC_ECC_PATH`, installed copy, bundled rules. A chosen folder that is incomplete (missing `skills/`, `agents/` or `commands/`) is an error, not a silent fallback.
 
 ## 3. Install zora-conductor
 

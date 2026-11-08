@@ -44,6 +44,7 @@ cd your-project && zc init && git add .zc && git commit -m "chore: add zc config
 |---|---|
 | `zc` CLI | Account pool, sticky selection, cooldowns, one-at-a-time dispatch, failover, scope and verify gates, reject, doctor |
 | `zc:orchestrate` skill | The manager's operating procedure: plan with ECC, split into scoped tasks, dispatch, review, accept/repair/reject |
+| `zc ecc` catalog | Search and print every ECC skill, agent, command and rule; install the full ECC; hand any of them to a worker with an `ecc:` list in the task |
 | `zc-reviewer` agent | Fresh-context, read-only reviewer for each worker result |
 | Worker prompt | Standing rules + the task's allowed paths + (optionally) ECC rule packs such as `common` and `dart` or `typescript` |
 
@@ -54,14 +55,15 @@ zc init                                       create .zc/ for this project
 zc dispatch --task T.md [--json]              run one task on the next ready account
 zc dispatch --repair <runId> --task fix.md    feedback on top of a worker's uncommitted result
 zc dispatch --task T.md --dry-run             print the exact worker prompt, run nothing
-zc reject [<runId>]                           discard a result (saved to the run folder first)
+zc reject [<runId>] [--force]                 discard a result (saved first; only files still exactly as the run left them; takes the project lock)
+zc ecc install|status|list|search|show        the whole ECC catalog (skills, agents, commands, rules)
 zc runs | status | doctor
 zc account add|login|check|list|reset|remove
 ```
 
 Dispatch exit codes: `0` done and verified · `1` failed / rejected / verify failed · `2` every account is cooling down (`retryAfter` in the result) · `3` needs a human.
 
-A task is a Markdown file with front matter:
+A task is a Markdown file with front matter (`ecc:` gives the worker any ECC skill, agent, command or rule pack, pasted into its prompt):
 
 ```markdown
 ---
@@ -74,6 +76,9 @@ verify:
   - npm run build
   - npm test
 minutes: 30
+ecc:
+  - skill:nestjs-patterns
+  - agent:typescript-reviewer
 ---
 Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
 ```
@@ -81,7 +86,7 @@ Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
 ## Safety model
 
 - The tree must be clean (or exactly match a prior run when using `--repair`) before a worker starts.
-- A task without `allowed` paths is refused. After the worker finishes, `zc` reads the changed files from git: anything outside `allowed`, or any secret-like path (`.env`, keys, `.git/`, `.zc/`), rejects the result and rolls it back.
+- A task without `allowed` paths is refused. After the worker finishes, `zc` reads the changed files from git: anything outside `allowed`, or any secret-like path (`.env`, keys, `.git/`), rejects the result and rolls it back. The project's own `.zc/` folder is snapshotted before every worker run; any change a worker makes there is undone, kept as evidence in the run folder, and fails the run as `SCOPE_VIOLATION`.
 - Workers are launched with file-edit permission only by default, which should keep them from running git or shell commands. If one does move HEAD or the branch anyway, `zc` stops and touches nothing.
 - `zc` is a guard rail, not a sandbox. A worker runs as you, and the scope check only sees files inside the repository. Do not point it at untrusted code on a machine that holds secrets you care about; use a disposable clone or container for that.
 - Verification commands run in `zc` as argv arrays, never through a shell. The worker's own report is never treated as proof.
@@ -90,7 +95,7 @@ Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
 
 ## What is and is not verified
 
-Verified here (Linux, 38 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, reject safety, ECC rule injection, plugin manifest validation.
+Verified here (Linux, 80 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, content-verified rollback and reject, atomic ECC install, ECC catalog validation, ECC rule injection, plugin manifest validation.
 
 **Not verified yet, because it needs real accounts and machines:**
 

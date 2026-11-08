@@ -56,3 +56,23 @@ Every run writes `result.json`, each attempt's prompt and raw event stream, and 
 - **Another worker CLI:** add an adapter beside `src/agy.mjs` that exposes `runX({account, prompt, cwd, timeoutSec, permissions})` returning `{code, timedOut, stdout, stderr, parsed}` where `parsed` has `status`, `response`, `error`, `softErrors`, `permissionAsks`; then select it with `worker.adapter`. `src/dispatch.mjs` currently calls `runAgy` directly; routing by adapter is a few lines.
 - **Another failure kind:** add a pattern in `src/classify.mjs` and a case in the `switch` in `src/dispatch.mjs`.
 - **Headless manager:** a `zc auto` command could drive `claude -p` in a loop. The interactive plugin is the supported path in 0.1.
+
+## How ECC reaches each side
+
+| ECC part | Claude (manager) | Gemini (workers) |
+|---|---|---|
+| Skills, agents, commands | Used natively through the installed ECC plugin | Their text is pasted into the worker prompt: per task with `ecc: [skill:x, agent:y, command:z]`, per project with `ecc.assets` |
+| Rules | Applied by the ECC plugin | Rule packs from `ecc.rulePacks` are pasted in; `common`, `dart`, `typescript` ship with zc |
+| Hooks | Run by Claude Code | Not applicable: workers run headless. zc's own scope check, rollback and verify gate stand in |
+| Catalog | `zc ecc search/list/show` finds what exists | Same text, chosen by the manager |
+
+Commands and agents describe procedures that rely on tools workers do not have (shell, sub-agents). The worker prompt tells the model to follow only the parts that need reading and editing files; the manager runs everything else. `zc ecc install` copies skills, agents, commands and rules out of an ECC checkout into the zc state folder (`ecc/`); a reference to a name that does not exist stops the dispatch before any worker is started.
+
+## Integrity rules (v0.1.3)
+
+- **`.zc/` belongs to the manager.** Rollbacks never touch it. Before each worker run `zc` snapshots it (SHA-256 per file, copies kept in the run folder); afterwards any difference is restored, the worker's version is saved under `zc-violations-<n>/`, and a run that would otherwise have succeeded ends as `SCOPE_VIOLATION`.
+- **Rollback is content-verified.** After the worker exits, `zc` records a fingerprint of every changed path (`workerState` in `result.json`). Rollback and `zc reject` restore a path only if it still has exactly that content; anything else is left alone and reported (`PARTIAL rollback`, exit 3). Results without `workerState` need `--force`. `--force` still saves the current files first.
+- **One lock for everything that changes the tree.** `dispatch` and `reject` take the same project lock; it is released on every path, including errors.
+- **Repair compares contents**, not just file names: the tree must hash identically to the run being repaired.
+- **Durations** (task `minutes`, `--minutes`, `defaults.*Minutes`) must be finite numbers greater than 0 and at most 480; anything else is refused before a timer is armed.
+- **ECC**: one validator (`validateCatalog`) decides what a usable ECC folder is and is used by install, status, doctor and source selection. Installs are staged and swapped atomically and record provenance in `INSTALLED.json` (origin, requested ref, full commit, whether it tracks a moving branch). Assets load by path with a per-file byte limit (`ecc.assetMaxBytes`); the prompt budget (`ecc.assetMaxChars`) includes whole sections only and lists what was left out.

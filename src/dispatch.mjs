@@ -6,8 +6,10 @@ import { classify, parseResetHint } from './classify.mjs';
 import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
-import { buildPrompt, loadEccRules, loadPrefix } from './prompt.mjs';
+import { buildPrompt, loadEccAssets, loadEccRules, loadPrefix } from './prompt.mjs';
+import { parseMinutes } from './limits.mjs';
 import { partitionByScope } from './scope.mjs';
+import { restoreZc, sameState, snapshotZc } from './snapshot.mjs';
 import { runVerify } from './verify.mjs';
 
 /** Exit codes the manager branches on. */
@@ -43,6 +45,7 @@ function taskPrompt({ root, task, config, resumeNote }) {
     prompt: buildPrompt({
       prefix: loadPrefix(root, config),
       eccRules: loadEccRules(config),
+      eccAssets: loadEccAssets(config, task),
       task,
       allowed,
       forbiddenExtra: config.forbidden,
@@ -74,6 +77,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   };
   const finish = (status, exitCode, extra = {}) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
+    try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
     writeJsonAtomic(join(runDir, 'result.json'), result);
     return result;
   };
@@ -103,11 +107,16 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     if (repairOf) {
       const prev = getRun(root, repairOf);
       if (!prev) return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: `unknown run "${repairOf}" (see \`zc runs\`).` });
-      const same = prev.head === head0 && JSON.stringify(prev.changed) === JSON.stringify(G.changedPaths(dirty));
+      if (!prev.workerState) {
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          nextAction: `run ${repairOf} has no recorded file contents (it predates content checks), so zc cannot prove the tree is still its result. Commit or \`zc reject --force\` it, then dispatch again.`
+        });
+      }
+      const same = prev.head === head0 && sameState(prev.workerState, G.dirtyState(root));
       if (!same) {
         return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
           changed: G.changedPaths(dirty),
-          nextAction: `the working tree no longer matches run ${repairOf} (HEAD moved or files were edited). Commit or \`zc reject\` first.`
+          nextAction: `the working tree no longer matches run ${repairOf} (HEAD moved or file contents changed). Commit or \`zc reject\` first.`
         });
       }
       resetAllowed = false; // the baseline is reviewed-in-progress work; never wipe it automatically
@@ -119,14 +128,19 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       });
     }
 
-    const timeoutSec = Math.round((task.meta.minutes ?? config.defaults.minutes) * 60);
+    let timeoutSec;
+    try {
+      timeoutSec = Math.round(parseMinutes(task.meta.minutes ?? config.defaults.minutes, 'task minutes') * 60);
+    } catch (error) {
+      return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: error.message });
+    }
     const cooldownMs = config.defaults.cooldownMinutes * 60_000;
     const flakyMs = config.defaults.flakyCooldownMinutes * 60_000;
     const flakyRetried = new Set();
     let deniedRetried = false;
 
     /** Keep the failed worker's partial work, then roll it back (or hand it on). */
-    const settlePartial = (n) => {
+    const settlePartial = (n, state) => {
       const entries = G.statusEntries(root);
       if (!entries.length) return { saved: false, rolledBack: false, stuck: [] };
       G.savePartial(root, join(runDir, `partial-${n}`), entries);
@@ -134,8 +148,8 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         resumeNote = CONTINUE_NOTE;
         return { saved: true, rolledBack: false, stuck: [] };
       }
-      const stuck = G.resetTree(root);
-      return { saved: true, rolledBack: stuck.length === 0, stuck };
+      const rb = G.rollbackPaths(root, entries, state);
+      return { saved: true, rolledBack: rb.conflicts.length === 0, stuck: rb.conflicts.map((c) => `${c.path} (${c.reason})`) };
     };
 
     while (result.attempts.length < config.defaults.maxAttempts) {
@@ -163,6 +177,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
       const { prompt } = taskPrompt({ root, task, config, resumeNote });
       writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
+      const zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
       const started = Date.now();
       const r = await runAgy({
         account, prompt, cwd: root, timeoutSec,
@@ -172,6 +187,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       });
       attempt.durationMs = Date.now() - started;
       writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
+
+      // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
+      const zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
+      if (zcViolations.length) attempt.zcViolations = zcViolations;
+      const workerState = G.dirtyState(root);
 
       if (G.head(root) !== head0 || G.branch(root) !== branch0) {
         attempt.outcome = 'moved-head';
@@ -202,18 +222,19 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             nextAction: `the worker tried an action it is not allowed (${p.denied.join('; ') || 'a command'}) and stopped with nothing done. Make the task need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.`
           });
         }
-        if (!changed.length) {
+        if (!changed.length && !zcViolations.length) {
           return finish('NO_CHANGES', EXIT.FAILED, {
             nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
           });
         }
         const scope = partitionByScope(changed, allowed, config.forbidden);
-        if (scope.forbidden.length || scope.outOfScope.length) {
+        const zcPaths = zcViolations.map((v) => v.path);
+        if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length) {
           G.savePartial(root, join(runDir, 'rejected'), entries);
-          const rolledBack = resetAllowed && G.resetTree(root).length === 0;
+          const rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
           return finish('SCOPE_VIOLATION', EXIT.FAILED, {
             outOfScope: scope.outOfScope,
-            forbidden: scope.forbidden,
+            forbidden: [...scope.forbidden, ...zcPaths],
             rolledBack,
             nextAction: rolledBack
               ? 'the worker edited files outside its allowed paths; its work was saved to the run folder and rolled back. Tighten the task or widen `allowed` deliberately.'
@@ -240,7 +261,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         outcome: 'failed', kind, error: (p.error || p.softErrors[0] || r.error || '').slice(0, 300)
       });
 
-      const settled = settlePartial(n);
+      const settled = settlePartial(n, workerState);
       attempt.partialSaved = settled.saved;
       attempt.rolledBack = settled.rolledBack;
       if (settled.stuck.length) {
@@ -293,20 +314,33 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   }
 }
 
-/** Discard a worker result: save it first, then restore HEAD. Refuses if you edited the tree yourself. */
+/**
+ * Discard a worker result: save the tree first, then restore only the paths whose content is still exactly
+ * what the run left. Anything you changed since is kept and reported. Takes the same lock as dispatch.
+ * Returns { runId, rolledBack, restored[], conflicts[{path, reason}], note? }.
+ */
 export function rejectRun({ root, runId, force = false }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to reject (see `zc runs`)');
-  const entries = G.statusEntries(root);
-  if (!entries.length) return { runId: prev.runId, rolledBack: false, note: 'working tree already clean' };
-  const known = new Set(prev.changed ?? []);
-  const foreign = G.changedPaths(entries).filter((p) => !known.has(p));
-  if (foreign.length && !force) {
-    throw new Error(`these changes are not from run ${prev.runId}; refusing to discard them: ${foreign.join(', ')} (use --force to override)`);
+  const release = acquireLock(lockFile(root), { runId: `reject-${prev.runId}` });
+  try {
+    const entries = G.statusEntries(root);
+    if (!entries.length) return { runId: prev.runId, rolledBack: false, restored: [], conflicts: [], note: 'working tree already clean' };
+    if (!prev.workerState && !force) {
+      throw new Error(`run ${prev.runId} has no recorded file contents (it predates content checks), so zc cannot tell its changes from yours; use --force to discard everything`);
+    }
+    const current = G.dirtyState(root);
+    const expected = force ? current : prev.workerState;
+    const foreign = Object.keys(current).filter((p) => !(p in expected) || expected[p] !== current[p]);
+    if (foreign.length && !force) {
+      throw new Error(`these changes are not exactly run ${prev.runId}'s result; refusing to discard them: ${foreign.join(', ')} (use --force to override)`);
+    }
+    G.savePartial(root, join(prev.runDir, 'rejected-manual'), entries);
+    const rb = G.rollbackPaths(root, entries, expected);
+    return { runId: prev.runId, rolledBack: rb.conflicts.length === 0, restored: rb.restored, conflicts: rb.conflicts };
+  } finally {
+    release();
   }
-  G.savePartial(root, join(prev.runDir, 'rejected-manual'), entries);
-  const stuck = G.resetTree(root);
-  return { runId: prev.runId, rolledBack: stuck.length === 0, stuck };
 }
 
 export function formatResult(r) {

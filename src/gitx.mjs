@@ -3,6 +3,10 @@ import {
   copyFileSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+import { captureState, fingerprint } from './snapshot.mjs';
+
+/** Fingerprints of every currently changed path (never `.zc/`). */
+export const dirtyState = (root) => captureState(root, changedPaths(statusEntries(root)));
 
 export function git(root, args, { allowFail = false } = {}) {
   const result = spawnSync('git', ['-c', 'core.quotepath=off', ...args], {
@@ -32,8 +36,13 @@ export function branch(root) {
 
 const isZc = (path) => path === '.zc' || path.startsWith('.zc/');
 
-/** Changed paths from `git status`, ignoring the project's own .zc/ folder. */
-export function statusEntries(root) {
+export const isZcPath = isZc;
+
+/**
+ * Changed paths from `git status`. The project's own .zc/ folder is left out unless `includeZc` is set;
+ * action code (rollback, clean-tree checks) never touches it, scope checks look at it separately.
+ */
+export function statusEntries(root, { includeZc = false } = {}) {
   const out = git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
   const parts = out.split('\0').filter(Boolean);
   const entries = [];
@@ -42,7 +51,7 @@ export function statusEntries(root) {
     entries.push({ xy, path: parts[i].slice(3) });
     if (/[RC]/.test(xy)) entries.push({ xy, path: parts[++i] }); // rename/copy: also the source path
   }
-  return entries.filter((entry) => !isZc(entry.path));
+  return includeZc ? entries : entries.filter((entry) => !isZc(entry.path));
 }
 
 export const changedPaths = (entries) => [...new Set(entries.map((e) => e.path))].sort();
@@ -79,16 +88,33 @@ function removeUntracked(root, relPath) {
   }
 }
 
+const inHead = (root, path) => git(root, ['cat-file', '-e', `HEAD:${path}`], { allowFail: true }).status === 0;
+
 /**
- * Roll the working tree back to HEAD. Only called when the tree was verified
- * clean before the worker started, so everything dirty now is the worker's.
- * Returns the paths that are still dirty afterwards (expected: none).
+ * Roll back only the given dirty paths, and only those whose content is exactly what `expected` records
+ * (path -> fingerprint). A path that changed again since, or that is not in `expected`, is left alone and
+ * reported as a conflict. Returns { restored, conflicts: [{path, reason}] }.
  */
-export function resetTree(root) {
-  // .zc/ holds the manager's own notes (progress log, tasks); a worker rollback must never touch it.
-  git(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', '.', ':(exclude).zc'], { allowFail: true });
-  for (const entry of statusEntries(root)) {
-    if (entry.xy === '??') removeUntracked(root, entry.path);
+export function rollbackPaths(root, entries, expected) {
+  const restored = [];
+  const conflicts = [];
+  const todo = [];
+  for (const path of changedPaths(entries)) {
+    if (isZc(path)) continue;
+    if (!(path in expected)) { conflicts.push({ path, reason: 'not part of the recorded worker result' }); continue; }
+    if (fingerprint(root, path) !== expected[path]) { conflicts.push({ path, reason: 'changed after the worker finished' }); continue; }
+    todo.push(path);
   }
-  return changedPaths(statusEntries(root));
+  const tracked = todo.filter((p) => inHead(root, p));
+  const fresh = todo.filter((p) => !tracked.includes(p));
+  for (let i = 0; i < tracked.length; i += 100) {
+    git(root, ['restore', '--source=HEAD', '--staged', '--worktree', '--', ...tracked.slice(i, i + 100)], { allowFail: true });
+  }
+  for (const path of fresh) {
+    git(root, ['rm', '-r', '-f', '--cached', '-q', '--ignore-unmatch', '--', path], { allowFail: true });
+    removeUntracked(root, path);
+  }
+  const still = new Set(changedPaths(statusEntries(root)));
+  for (const path of todo) (still.has(path) ? conflicts : restored).push(still.has(path) ? { path, reason: 'could not be restored' } : path);
+  return { restored, conflicts };
 }

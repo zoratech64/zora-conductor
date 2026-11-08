@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { DEFAULT_ASSET_BYTES, parseSpec } from './ecc.mjs';
 import { readJson } from './fsx.mjs';
 import { configPath } from './paths.mjs';
+import { parseCount, parseMinutes } from './limits.mjs';
 import { splitArgv } from './task.mjs';
 
 export const DEFAULTS = {
@@ -27,7 +29,7 @@ export const DEFAULTS = {
     permissions: 'edit',
     prefixFile: '.zc/worker-prefix.md'
   },
-  ecc: { path: '', rulePacks: [], maxChars: 40000 }
+  ecc: { path: '', rulePacks: [], maxChars: 40000, assets: [], assetMaxChars: 60000, assetMaxBytes: DEFAULT_ASSET_BYTES }
 };
 
 const ON_LIMIT = ['reset', 'continue'];
@@ -44,6 +46,21 @@ function normalizeCommands(list, where) {
   });
 }
 
+function validateEcc(ecc, root) {
+  if (typeof ecc.path !== 'string') throw new Error('ecc.path must be text');
+  if (ecc.path) ecc.path = resolve(root, ecc.path); // relative paths mean "relative to the project", not to wherever zc was started
+  if (!Array.isArray(ecc.assets)) throw new Error('ecc.assets must be a list like ["skill:dart-flutter-patterns"]');
+  for (const a of ecc.assets) {
+    try { parseSpec(a); } catch (error) { throw new Error(`ecc.assets: ${error.message}`); }
+  }
+  if (!Array.isArray(ecc.rulePacks) || !ecc.rulePacks.every((p) => typeof p === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(p))) {
+    throw new Error('ecc.rulePacks must be a list of pack names such as ["common", "dart"]');
+  }
+  parseCount(ecc.maxChars, 'ecc.maxChars', { min: 1000, max: 400_000 });
+  parseCount(ecc.assetMaxChars, 'ecc.assetMaxChars', { min: 1000, max: 400_000 });
+  parseCount(ecc.assetMaxBytes, 'ecc.assetMaxBytes', { min: 1024, max: 2_000_000 });
+}
+
 export function loadConfig(root) {
   const file = configPath(root);
   const user = readJson(file, null);
@@ -56,6 +73,9 @@ export function loadConfig(root) {
     ecc: { ...DEFAULTS.ecc, ...user.ecc }
   };
   config.verify = normalizeCommands(config.verify, 'verify');
+  validateEcc(config.ecc, root);
+  for (const key of ['minutes', 'cooldownMinutes', 'flakyCooldownMinutes', 'verifyTimeoutMinutes']) parseMinutes(config.defaults[key], `defaults.${key}`);
+  parseCount(config.defaults.maxAttempts, 'defaults.maxAttempts', { max: 50 });
   if (!ON_LIMIT.includes(config.defaults.onLimit)) throw new Error(`defaults.onLimit must be ${ON_LIMIT.join(' or ')}`);
   if (!PERMISSIONS.includes(config.worker.permissions)) throw new Error(`worker.permissions must be ${PERMISSIONS.join(', ')}`);
   if (config.worker.adapter !== 'agy') throw new Error(`worker.adapter "${config.worker.adapter}" is not supported yet (only "agy")`);

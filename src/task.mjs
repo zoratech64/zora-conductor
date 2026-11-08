@@ -1,3 +1,4 @@
+import { parseMinutes } from './limits.mjs';
 /** Shell-like splitting for verify commands. No expansion, no operators: argv only. */
 export function splitArgv(text) {
   const out = [];
@@ -64,7 +65,8 @@ export function parseTask(text, { fallbackId = 'task' } = {}) {
       title: meta.title ? String(meta.title) : '',
       allowed: asList(meta.allowed).map(String),
       verify: asList(meta.verify).map((line) => splitArgv(String(line))).filter((argv) => argv.length),
-      minutes: meta.minutes ? Number(meta.minutes) : undefined,
+      ecc: asList(meta.ecc).map(String),
+      minutes: meta.minutes === undefined ? undefined : parseMinutes(meta.minutes, 'task minutes'),
       model: meta.model ? String(meta.model) : undefined
     },
     body: body.trim()

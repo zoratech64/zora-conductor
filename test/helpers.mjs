@@ -61,3 +61,19 @@ export const lastPrompt = (account) => readFileSync(join(account.profileDir, 'la
 
 export const task = (frontMatter, body = 'Do the thing.') =>
   parseTask(`---\n${frontMatter}\n---\n${body}`, { fallbackId: 'T' });
+
+/** A tiny ECC checkout with one of each kind of asset. */
+export function fakeEcc() {
+  const dir = mkdtempSync(join(tmpdir(), 'zc-fake-ecc-'));
+  const w = (rel, text) => { mkdirSync(join(dir, rel, '..'), { recursive: true }); writeFileSync(join(dir, rel), text); };
+  w('skills/flutter-magic/SKILL.md', '---\nname: flutter-magic\ndescription: Widget tricks for Flutter apps\n---\nSKILL-BODY-FLUTTER');
+  w('skills/nest-magic/SKILL.md', '---\nname: nest-magic\ndescription: NestJS module patterns\n---\nSKILL-BODY-NEST');
+  w('agents/flutter-reviewer.md', '---\nname: flutter-reviewer\ndescription: Reviews Flutter code\ntools: Read, Bash\n---\nAGENT-BODY');
+  w('commands/flutter-test.md', '---\ndescription: Run Flutter tests\n---\nCOMMAND-BODY');
+  w('rules/dart/style.md', 'RULE-BODY');
+  w('rules/common/base.md', 'RULE-COMMON');
+  w('rules/common/style.md', 'ALWAYS-USE-SMALL-FILES');
+  w('VERSION', '9.9.9');
+  return dir;
+}
+

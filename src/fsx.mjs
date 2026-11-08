@@ -47,7 +47,7 @@ export function acquireLock(path, info = {}) {
       if (error.code !== 'EEXIST') throw error;
       const current = readJson(path, null);
       if (current && pidAlive(current.pid)) {
-        throw new Error(`another zc dispatch is already running (pid ${current.pid}); only one worker runs at a time`);
+        throw new Error(`another zc operation (dispatch or reject) is already running (pid ${current.pid}); only one runs at a time`);
       }
       try { unlinkSync(path); } catch { /* raced with another cleanup */ }
     }

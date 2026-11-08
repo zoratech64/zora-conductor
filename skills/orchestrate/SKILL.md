@@ -23,15 +23,17 @@ You are the lead. You plan, decide, verify, and integrate. Workers write the cod
 
 ## The loop
 
-1. **Plan with ECC.** Use `/ecc:plan` (planner and architect agents), the `search-first` skill when a library choice is open, and `tdd-workflow` to decide the tests first. Pick the stack skills that fit:
-   - Flutter/Dart: `dart-flutter-patterns`, `flutter-dart-code-review`, agent `flutter-reviewer`, agent `dart-build-resolver`.
-   - NestJS/TypeScript: `nestjs-patterns`, `backend-patterns`, `api-design`, `database-migrations`, agent `typescript-reviewer`.
-2. **Split into tasks.** Each task is one concern that a worker can finish in about 30 minutes, with its own files. Write each to `.zc/tasks/T-00N.md` using `.zc/tasks/TEMPLATE.md`: `allowed:` paths (required, as narrow as possible), `verify:` commands, acceptance tests, and constraints. Order them so dependencies come first. Tasks run strictly one after another.
+1. **Plan with ECC.** Use `/ecc:plan` (planner and architect agents), the `search-first` skill when a library choice is open, and `tdd-workflow` to decide the tests first. ECC is large (hundreds of skills, agents and commands), so look things up instead of guessing: `zc ecc search <words> [--kind skill|agent|command]` lists matches with descriptions and `zc ecc show skill:<name>` prints one. Stack defaults:
+   - Flutter/Dart: skills `dart-flutter-patterns`, `flutter-dart-code-review`; agents `flutter-reviewer`, `dart-build-resolver`; commands `/flutter-review`, `/flutter-test`, `/flutter-build`.
+   - NestJS/TypeScript: skills `nestjs-patterns`, `backend-patterns`, `api-design`, `database-migrations`; agents `typescript-reviewer`, `database-reviewer`.
+   - Always available: `verification-loop`, `security-review`, `/quality-gate`, `/build-fix`, agents `code-reviewer`, `security-reviewer`, `silent-failure-hunter`.
+2. **Split into tasks.** Each task is one concern that a worker can finish in about 30 minutes, with its own files. Write each to `.zc/tasks/T-00N.md` using `.zc/tasks/TEMPLATE.md`: `allowed:` paths (required, as narrow as possible), `verify:` commands, acceptance tests, and constraints. Give each worker the ECC knowledge it needs with an `ecc:` list in the task front matter, for example `ecc: [skill:dart-flutter-patterns, agent:flutter-reviewer]` (kinds: `skill:`, `agent:`, `command:`, `rules:`). Pick at most two or three per task: the text is pasted into the worker's prompt, and workers cannot run commands or hooks, so only the guidance travels. An unknown name stops the dispatch with a suggestion. Order them so dependencies come first. Tasks run strictly one after another.
 3. **Dispatch.** `zc dispatch --task .zc/tasks/T-001.md --json`. The call blocks until the worker finishes (up to the task's minutes), so give the Bash call a long timeout. Do not poll in a loop.
 4. **Read the result** and branch on the exit code and `status` (tables below).
 5. **Review. Never accept the worker's own summary as proof.**
    - Read `git status` and `git diff` yourself.
    - Run the project's tests yourself (skill `verification-loop`).
+   - Run the ECC review that fits the stack on the diff yourself (`/flutter-review`, `typescript-reviewer`, `/quality-gate`; `silent-failure-hunter` for error handling).
    - For anything non-trivial, launch the `zc-reviewer` agent in a fresh context. Give it the task intent and tell it to inspect `git diff`. Add the ECC reviewer for the language (`flutter-reviewer`, `typescript-reviewer`, or `code-reviewer`). Auth, payments, or data handling also gets `security-review`.
 6. **Decide.**
    - Accept: `git add -A && git commit -m "<conventional message>"`, then append one line to `.zc/progress.md` (date, task id, run id).

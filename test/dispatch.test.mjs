@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import * as accounts from '../src/accounts.mjs';
 import { dispatch, rejectRun } from '../src/dispatch.mjs';
 import { statusEntries } from '../src/gitx.mjs';
-import { FAIL, addFake, calls, git, lastPrompt, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
+import { FAIL, addFake, fakeEcc, calls, git, lastPrompt, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
 
 const scoped = (extra = '') => task(`id: T-1\nallowed:\n  - src/\n${extra}`);
 const clean = (dir) => statusEntries(dir).length === 0;
@@ -216,7 +216,7 @@ test('reject restores HEAD but will not discard edits the worker did not make', 
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
   await dispatch({ root: dir, task: scoped(), config });
   writeFileSync(join(dir, 'src/mine.txt'), 'mine');
-  assert.throws(() => rejectRun({ root: dir }), /not from run/);
+  assert.throws(() => rejectRun({ root: dir }), /not exactly run/);
   assert.ok(existsSync(join(dir, 'src/mine.txt')));
   rejectRun({ root: dir, force: true });
   assert.ok(clean(dir));
@@ -235,9 +235,7 @@ test('onLimit=continue hands partial work to the next account instead of resetti
 
 test('dry run builds the prompt (with ECC rules) without touching anything', async () => {
   makeHome();
-  const ecc = mkdtempSync(join(tmpdir(), 'zc-ecc-'));
-  mkdirSync(join(ecc, 'rules', 'common'), { recursive: true });
-  writeFileSync(join(ecc, 'rules', 'common', 'style.md'), 'ALWAYS-USE-SMALL-FILES');
+  const ecc = fakeEcc();
   const { dir, config } = makeRepo({ ecc: { path: ecc, rulePacks: ['common'] } });
   const r = await dispatch({ root: dir, task: scoped(), config, dryRun: true });
   assert.equal(r.status, 'DRY_RUN');
