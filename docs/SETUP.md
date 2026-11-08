@@ -34,11 +34,7 @@ or inside Claude Code:
 
 Review ECC's hooks before enabling them; its `minimal` profile has none. Confirm with `/plugin list`.
 
-Then get a checkout of ECC for the worker rules (workers use Gemini, which does not run ECC's hooks, so `zc` pastes the rule packs into each worker prompt):
-
-```
-git clone https://github.com/affaan-m/ECC.git ~/ecc            # Windows: C:\tools\ecc
-```
+Workers use Gemini, which does not run ECC's hooks, so `zc` pastes ECC's coding rules into each worker prompt. A copy of ECC's `common`, `dart` and `typescript` rule packs (MIT, version in `vendor/ecc/VERSION.txt`) ships inside zora-conductor and is used by default; there is nothing to clone. To use a newer or customised ECC instead, set `ecc.path` in `.zc/config.json` (or `ZC_ECC_PATH`) to a checkout.
 
 ## 3. Install zora-conductor
 
@@ -90,11 +86,11 @@ Edit `.zc/config.json`:
   "verify": [["dart", "analyze"], ["flutter", "test"]],
   "defaults": { "onLimit": "reset" },
   "worker": { "permissions": "edit" },
-  "ecc": { "path": "/home/you/ecc", "rulePacks": ["common", "dart"] }
+  "ecc": { "path": "", "rulePacks": ["common", "dart"] }
 }
 ```
 
-`zc init` detects Flutter (`pubspec.yaml`) and Node/NestJS (`package.json`) and fills `verify` and `rulePacks` for you. Set `ecc.path` to your ECC checkout. Then commit it:
+`zc init` detects Flutter (`pubspec.yaml`) and Node/NestJS (`package.json`) and fills `verify` and `rulePacks` for you. Leave `ecc.path` empty to use the bundled rules. Then commit it:
 
 ```bash
 git add .zc && git commit -m "chore: add zc config"

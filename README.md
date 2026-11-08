@@ -103,6 +103,6 @@ Other limits: only the `agy` adapter exists (a plain Gemini CLI adapter is the n
 
 ## Lineage
 
-Built from scratch after reading two projects: `zora-ai-orchestrator` (clean-checkout, scope and HEAD guards; Linux keyring isolation) and `Pirun` (per-account `agy` profiles, failure classification, quota windows). Their ideas are reused; no code was copied, and the Antigravity binary patcher in `zora-ai-orchestrator` was deliberately left out.
+Built from scratch after reading two projects: `zora-ai-orchestrator` (clean-checkout, scope and HEAD guards; Linux keyring isolation) and `Pirun` (per-account `agy` profiles, failure classification, quota windows). Their ideas are reused; no code was copied (the only third-party material is ECC's `rules/` folder, bundled under `vendor/ecc/` with its MIT license), and the Antigravity binary patcher in `zora-ai-orchestrator` was deliberately left out.
 
 MIT licensed.

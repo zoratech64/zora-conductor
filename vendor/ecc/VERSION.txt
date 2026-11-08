@@ -1,0 +1,5 @@
+ECC rules bundled from https://github.com/affaan-m/ECC
+version: 2.2.3
+license: MIT (see LICENSE)
+bundled packs: common, dart, typescript (the rest of ECC rules/ is not copied; set ecc.path to a full ECC checkout to use other packs)
+the full ECC (skills, agents, commands, hooks) is installed separately in Claude Code.

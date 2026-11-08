@@ -1,6 +1,17 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+/** ECC rules shipped inside zora-conductor, used when the project does not point at its own ECC checkout. */
+export const BUNDLED_ECC = resolve(import.meta.dirname, '..', 'vendor', 'ecc');
+
+/** ECC rule files that describe Claude Code hooks and sub-agents; they mean nothing to a Gemini worker. */
+const CLAUDE_ONLY = new Set(['hooks.md', 'agents.md']);
+
+/** Project setting first, then ZC_ECC_PATH, then the bundled copy. */
+export function eccBase(config) {
+  return config.ecc.path || process.env.ZC_ECC_PATH || BUNDLED_ECC;
+}
+
 export const DEFAULT_PREFIX = `You are a worker. A manager assigns you one bounded task and reviews everything you do.
 - Do exactly what the task says. No unrequested improvements, renames, or refactors.
 - Edit only the allowed paths listed below. Anything else you change will be rejected and rolled back.
@@ -22,13 +33,13 @@ export function loadPrefix(root, config) {
  * hooks, so the standards travel in the prompt instead. Capped to protect context.
  */
 export function loadEccRules(config) {
-  const base = config.ecc.path || process.env.ZC_ECC_PATH;
-  if (!base || !config.ecc.rulePacks.length) return '';
+  const base = eccBase(config);
+  if (!config.ecc.rulePacks.length) return '';
   const sections = [];
   for (const pack of config.ecc.rulePacks) {
     const dir = join(base, 'rules', pack);
     if (!existsSync(dir)) continue;
-    for (const name of readdirSync(dir).filter((n) => n.endsWith('.md')).sort()) {
+    for (const name of readdirSync(dir).filter((n) => n.endsWith('.md') && !CLAUDE_ONLY.has(n)).sort()) {
       sections.push(`### ${pack}/${name}\n${readFileSync(join(dir, name), 'utf8').trim()}`);
     }
   }

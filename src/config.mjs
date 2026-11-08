@@ -27,7 +27,7 @@ export const DEFAULTS = {
     permissions: 'edit',
     prefixFile: '.zc/worker-prefix.md'
   },
-  ecc: { path: '', rulePacks: [], maxChars: 14000 }
+  ecc: { path: '', rulePacks: [], maxChars: 40000 }
 };
 
 const ON_LIMIT = ['reset', 'continue'];

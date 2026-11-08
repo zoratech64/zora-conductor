@@ -8,7 +8,7 @@ import { dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.
 import * as G from './gitx.mjs';
 import { configPath, stateRoot } from './paths.mjs';
 import { run } from './proc.mjs';
-import { DEFAULT_PREFIX } from './prompt.mjs';
+import { DEFAULT_PREFIX, eccBase } from './prompt.mjs';
 import { parseTask, splitArgv } from './task.mjs';
 
 const HELP = `zc — Claude manages, Gemini workers implement (one at a time, in place)
@@ -204,9 +204,9 @@ async function cmdDoctor(argv) {
     try {
       const config = loadConfig(root);
       add('.zc/config.json', true, root);
-      const eccPath = config.ecc.path || process.env.ZC_ECC_PATH;
+      const eccPath = eccBase(config);
       if (config.ecc.rulePacks.length) {
-        add('ECC rules for workers', Boolean(eccPath && existsSync(join(eccPath, 'rules'))), eccPath || 'ecc.path not set', 'set ecc.path in .zc/config.json to a checkout of ECC (workers get no hooks; rules travel in the prompt)', 'warn');
+        add('ECC rules for workers', existsSync(join(eccPath, 'rules')), config.ecc.path || process.env.ZC_ECC_PATH ? eccPath : `bundled (${eccPath})`, 'ecc.path does not contain a rules/ folder; fix it or remove it to use the bundled rules', 'warn');
       }
     } catch (error) {
       add('.zc/config.json', false, '', error.message);

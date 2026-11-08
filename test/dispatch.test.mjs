@@ -300,3 +300,17 @@ test('isolated launch: a full dispatch works through the private D-Bus session',
   assert.equal(r.status, 'OK');
   assert.deepEqual(r.changed, ['src/iso.txt']);
 });
+
+test('ECC rules: with no ecc.path the bundled rules are used', async () => {
+  makeHome();
+  delete process.env.ZC_ECC_PATH;
+  const { dir, config } = makeRepo({ ecc: { path: '', rulePacks: ['common', 'dart'] } });
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'x' } });
+  const r = await dispatch({ root: dir, task: scoped(), config, dryRun: true });
+  const prompt = r.prompt;
+  assert.match(prompt, /Project standards \(ECC\)/);
+  assert.match(prompt, /### common\//);
+  assert.match(prompt, /### dart\/testing\.md/);
+  assert.doesNotMatch(prompt, /truncated at/);
+  assert.doesNotMatch(prompt, /### common\/hooks\.md/);
+});
