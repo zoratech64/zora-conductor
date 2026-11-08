@@ -328,13 +328,33 @@ test('snapshot errors other than "missing" are thrown, not treated as an empty .
   assert.equal(snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-missing-'))).rootKind, 'missing', 'a truly absent .zc is still fine');
 });
 
-test('if .zc/ becomes unreadable during the run, the result is NEEDS_HUMAN, never a clean pass', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, () => {
+test('restoreZc throws (does not report a clean .zc/) when a folder became unreadable', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, () => {
   const { dir } = makeRepo();
   mkdirSync(join(dir, '.zc/sub'));
   const snap = snapshotZc(dir, mkdtempSync(join(tmpdir(), 'zc-copy-later-')));
   chmodSync(join(dir, '.zc/sub'), 0o000);
   try {
     assert.throws(() => restoreZc(dir, snap, { saveDir: mkdtempSync(join(tmpdir(), 'zc-ev-later-')) }), /EACCES/);
+  } finally {
+    chmodSync(join(dir, '.zc/sub'), 0o755);
+  }
+});
+
+test('dispatch: a worker that makes .zc/ unreadable ends as NEEDS_HUMAN, its work is not verified, and the pre-run copy is kept', { skip: !canTestPermissions && 'needs a non-root POSIX user' }, async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  mkdirSync(join(dir, '.zc/sub'));
+  writeFileSync(join(dir, '.zc/sub/notes.md'), 'manager notes');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'worker' }, chmod: { '.zc/sub': '000' } });
+  try {
+    const r = await dispatch({ root: dir, task: scoped(), config });
+    assert.equal(r.status, 'NEEDS_HUMAN');
+    assert.equal(r.exitCode, 3);
+    assert.match(r.nextAction, /could not be read to check it.*EACCES/);
+    assert.deepEqual(r.verify, [], 'the verify gate never ran, so nothing is reported as verified');
+    assert.equal(r.attempts[0].outcome, 'zc-not-checked');
+    assert.equal(readFileSync(join(r.runDir, 'zc-snapshot-1', '.zc', 'sub', 'notes.md'), 'utf8'), 'manager notes', 'the pre-run copy is kept');
+    assert.ok(existsSync(join(dir, 'src/a.txt')), 'nothing was rolled back automatically');
   } finally {
     chmodSync(join(dir, '.zc/sub'), 0o755);
   }

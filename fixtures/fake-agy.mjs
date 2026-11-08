@@ -3,9 +3,10 @@
 // fake account can act differently:
 //   { mode: ok|quota|auth|license|location|server|slow|permission, write: {path: content},
 //     partial: true (write files, then fail), failTimes: N (misbehave N times, then succeed),
-//     commit: true (also git commit, to simulate a worker moving HEAD), signedOut: true (/usage fails) }
+//     commit: true (also git commit, to simulate a worker moving HEAD), signedOut: true (/usage fails),
+//     chmod: {path: octal-mode} (change permissions, e.g. make a folder unreadable) }
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const argv = process.argv.slice(2);
@@ -40,6 +41,7 @@ const writeFiles = () => {
     mkdirSync(dirname(full), { recursive: true });
     writeFileSync(full, content);
   }
+  for (const [path, mode] of Object.entries(scenario.chmod ?? {})) chmodSync(join(cwd, path), Number.parseInt(mode, 8));
 };
 const failResult = (message) => {
   emit({ event: 'result', result: { status: 'ERROR', error: message, num_turns: 1 } });
