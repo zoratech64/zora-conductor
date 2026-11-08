@@ -314,3 +314,25 @@ test('ECC rules: with no ecc.path the bundled rules are used', async () => {
   assert.doesNotMatch(prompt, /truncated at/);
   assert.doesNotMatch(prompt, /### common\/hooks\.md/);
 });
+
+test('a worker whose command was refused (empty "success") is retried once with a no-commands note, then works', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'denied-empty', failTimes: 1, write: { 'src/a.txt': 'ok' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.status, 'OK');
+  assert.equal(calls(g1), 2);
+  assert.match(lastPrompt(g1), /tried to run a shell command/);
+  assert.equal(r.attempts[0].kind, 'permission');
+});
+
+test('a worker that keeps trying commands ends as DENIED with the refused command listed', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'denied-empty' });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.status, 'DENIED');
+  assert.deepEqual(r.denied, ['run_command: ls -la']);
+  assert.match(r.nextAction, /ls -la/);
+  assert.ok(clean(dir));
+});

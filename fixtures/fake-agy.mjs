@@ -58,6 +58,11 @@ switch (mode) {
   case 'server': failResult('Internal error encountered'); break;
   case 'auth': console.error('Authentication required. Please sign in.'); process.exit(1); break;
   case 'slow': await new Promise((resolve) => setTimeout(resolve, 60_000)); break;
+  case 'denied-empty':
+    emit({ event: 'step_update', step_update: { step_type: 'tool', state: 'ERROR', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'ls -la' }, error: { message: 'permission check failed for unsandboxed "ls -la": user denied permission to run command' } } } });
+    emit({ event: 'result', result: { status: 'SUCCESS', response: '', num_turns: 1, denied_actions: [{ action: 'command', display_name: 'RunCommand' }] } });
+    process.exit(0);
+    break;
   case 'permission':
     emit({ event: 'step_update', step_update: { step_type: 'tool', state: 'ERROR', tool_name: 'run_command', tool_info: { error: { message: 'permission check failed: headless mode cannot prompt' } } } });
     emit({ event: 'result', result: { status: 'CANCELED', response: '', num_turns: 1 } });

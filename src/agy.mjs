@@ -124,7 +124,7 @@ const isRecord = (v) => v && typeof v === 'object' && !Array.isArray(v);
 export function parseAgyOutput(text) {
   const out = {
     status: '', response: '', error: '', softErrors: [], tools: [],
-    permissionAsks: [], turns: 0, conversationId: '', usage: null
+    permissionAsks: [], denied: [], turns: 0, conversationId: '', usage: null
   };
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -144,7 +144,12 @@ export function parseAgyOutput(text) {
         const failed = Boolean(info.error);
         out.tools.push({ name: String(step.tool_name ?? info.name ?? 'tool'), failed });
         const message = isRecord(info.error) && typeof info.error.message === 'string' ? info.error.message : '';
-        if (PERMISSION_DENIAL.test(message)) out.permissionAsks.push(String(step.tool_name ?? 'tool'));
+        if (PERMISSION_DENIAL.test(message)) {
+          out.permissionAsks.push(String(step.tool_name ?? 'tool'));
+          const params = isRecord(info.parameters) ? info.parameters : {};
+          const detail = params.CommandLine ?? params.command ?? params.Path ?? '';
+          out.denied.push(`${step.tool_name ?? 'tool'}${detail ? `: ${String(detail).slice(0, 200)}` : ''}`);
+        }
       }
     }
     if (event.event === 'result' && isRecord(event.result)) {
@@ -155,6 +160,12 @@ export function parseAgyOutput(text) {
       if (typeof r.response === 'string') out.response = r.response.trim();
       if (typeof r.error === 'string') out.error = r.error.trim().slice(0, 600);
       if (isRecord(r.usage)) out.usage = r.usage;
+      if (Array.isArray(r.denied_actions) && r.denied_actions.length && !out.permissionAsks.length) {
+        for (const a of r.denied_actions) {
+          out.permissionAsks.push(String(isRecord(a) ? a.display_name ?? a.action ?? 'action' : a));
+          out.denied.push(String(isRecord(a) ? a.display_name ?? a.action ?? 'action' : a));
+        }
+      }
     }
   }
   return out;

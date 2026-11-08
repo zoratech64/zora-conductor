@@ -16,6 +16,7 @@ export const EXIT = { OK: 0, FAILED: 1, NO_CAPACITY: 2, NEEDS_HUMAN: 3 };
 const REPAIR_NOTE =
   'The working tree already contains your earlier, uncommitted work on this task. Read it first, ' +
   'then apply the instructions below on top of it. Do not start over.';
+const NO_COMMANDS_NOTE = 'Your previous attempt ended because you tried to run a shell command, which is not allowed here. Do the task using only file read, list, search and edit tools. Do not run any command.';
 const CONTINUE_NOTE =
   'A previous worker was interrupted (usage limit) before finishing. Its partial, uncommitted work is ' +
   'in the working tree. Inspect it, keep what is correct, and complete the task.';
@@ -122,6 +123,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     const cooldownMs = config.defaults.cooldownMinutes * 60_000;
     const flakyMs = config.defaults.flakyCooldownMinutes * 60_000;
     const flakyRetried = new Set();
+    let deniedRetried = false;
 
     /** Keep the failed worker's partial work, then roll it back (or hand it on). */
     const settlePartial = (n) => {
@@ -188,6 +190,18 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         const entries = G.statusEntries(root);
         const changed = G.changedPaths(entries);
         Object.assign(result, { account: account.id, changed, workerSummary: p.response.slice(0, 2000) || '(the worker wrote no report)' });
+        if (!changed.length && p.permissionAsks.length) {
+          result.denied = p.denied;
+          if (!deniedRetried) { // the model tried a command once; say plainly that commands are off and try again
+            deniedRetried = true;
+            Object.assign(attempt, { outcome: 'failed', kind: 'permission', error: p.denied[0] ?? 'denied action' });
+            resumeNote = NO_COMMANDS_NOTE;
+            continue;
+          }
+          return finish('DENIED', EXIT.FAILED, {
+            nextAction: `the worker tried an action it is not allowed (${p.denied.join('; ') || 'a command'}) and stopped with nothing done. Make the task need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.`
+          });
+        }
         if (!changed.length) {
           return finish('NO_CHANGES', EXIT.FAILED, {
             nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
@@ -262,6 +276,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         case 'permission':
           return finish('DENIED', EXIT.FAILED, {
             account: account.id,
+            denied: p.denied,
             nextAction: 'the worker was denied an action under worker.permissions. Rephrase the task to need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.'
           });
         default:
