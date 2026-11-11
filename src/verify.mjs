@@ -7,13 +7,16 @@ export async function runVerify(root, commands, { timeoutMs }) {
   const results = [];
   for (const argv of commands) {
     const [command, ...args] = argv;
+    const started = Date.now();
     const r = await run(command, args, { cwd: root, env: process.env, timeoutMs });
+    const durationMs = Date.now() - started;
     const ok = r.code === 0 && !r.timedOut && !r.error;
     results.push({
       cmd: argv.join(' '),
       ok,
       code: r.code,
       timedOut: r.timedOut,
+      durationMs,
       tail: tail(`${r.error ? `${r.error}\n` : ''}${r.stdout}\n${r.stderr}`)
     });
     if (!ok) break;

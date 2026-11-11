@@ -8,6 +8,7 @@ import { parseArgs } from '../src/args.mjs';
 import { classify, parseResetHint } from '../src/classify.mjs';
 import { globToRegExp, isForbidden, matches, partitionByScope } from '../src/scope.mjs';
 import { parseTask, splitArgv } from '../src/task.mjs';
+import { attemptMetrics } from '../src/metrics.mjs';
 import { makeHome } from './helpers.mjs';
 
 test('globs: directories, **, *, and bare directory names', () => {
@@ -157,4 +158,48 @@ test('isolation: launch plan wraps agy, gives it a private HOME and drops the sh
   for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'GNOME_KEYRING_CONTROL', 'SSH_AUTH_SOCK']) assert.equal(plan.env[name], undefined);
   assert.ok(existsSync(plan.env.HOME) && existsSync(plan.env.XDG_RUNTIME_DIR));
   assert.equal(plan.env.A, '1');
+});
+
+test('attemptMetrics: full parse, missing result event, empty tools, multi-byte prompt', () => {
+  const events = [
+    '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{}}}',
+    '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{}}}',
+    '{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"edit_file","tool_info":{}}}',
+    '{"event":"step_update","step_update":{"step_type":"tool","state":"ERROR","tool_name":"write_file","tool_info":{"error":{"message":"disk full"}}}}',
+    '{"event":"result","result":{"status":"SUCCESS","num_turns":4,"usage":{"input_tokens":120,"output_tokens":45}}}'
+  ].join('\n');
+  const parsed = parseAgyOutput(events);
+  const prompt = 'hello world';
+  const metrics = attemptMetrics(parsed, prompt);
+
+  assert.equal(metrics.promptBytes, Buffer.byteLength(prompt, 'utf8'));
+  assert.equal(metrics.turns, 4);
+  assert.deepEqual(metrics.usage, { input_tokens: 120, output_tokens: 45 });
+  assert.deepEqual(metrics.tools, {
+    total: 4,
+    failed: 1,
+    byName: { read_file: 2, edit_file: 1, write_file: 1 }
+  });
+  assert.deepEqual(metrics.fileOps, {
+    read: 2,
+    edit: 1,
+    write: 1
+  });
+
+  const noResult = parseAgyOutput('{"event":"step_update","step_update":{"step_type":"tool","state":"DONE","tool_name":"read_file","tool_info":{}}}');
+  const mNoResult = attemptMetrics(noResult, 'test');
+  assert.equal(mNoResult.turns, null);
+  assert.equal(mNoResult.usage, null);
+  assert.equal(mNoResult.tools.total, 1);
+  assert.equal(mNoResult.fileOps.read, 1);
+
+  const empty = { status: 'SUCCESS', turns: 1, usage: null, tools: [] };
+  const mEmpty = attemptMetrics(empty, '');
+  assert.deepEqual(mEmpty.tools, { total: 0, failed: 0, byName: {} });
+  assert.deepEqual(mEmpty.fileOps, { read: 0, edit: 0, write: 0 });
+
+  const multiBytePrompt = 'こんにちは世界 🌍';
+  const mMulti = attemptMetrics(empty, multiBytePrompt);
+  assert.equal(mMulti.promptBytes, Buffer.byteLength(multiBytePrompt, 'utf8'));
+  assert.ok(mMulti.promptBytes > multiBytePrompt.length);
 });

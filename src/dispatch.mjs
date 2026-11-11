@@ -6,6 +6,7 @@ import { classify, parseResetHint } from './classify.mjs';
 import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
+import { attemptMetrics } from './metrics.mjs';
 import { buildPrompt, loadEccAssets, loadEccRules, loadPrefix } from './prompt.mjs';
 import { parseMinutes } from './limits.mjs';
 import { partitionByScope } from './scope.mjs';
@@ -200,6 +201,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         effort: config.worker.effort
       });
       attempt.durationMs = Date.now() - started;
+      attempt.metrics = attemptMetrics(r.parsed, prompt);
       writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
 
       // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
@@ -273,7 +275,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
               : 'the worker edited files outside its allowed paths and the tree was left as-is. Review with `git status`, then `zc reject`.'
           });
         }
+        const vStarted = Date.now();
         result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
+        result.verifyDurationMs = Date.now() - vStarted;
         if (result.verify.some((v) => !v.ok)) {
           return finish('VERIFY_FAILED', EXIT.FAILED, {
             nextAction: 'the changes stay in the working tree. Read the failing tail, then send a fix with `zc dispatch --repair <runId>` or discard with `zc reject`.'
