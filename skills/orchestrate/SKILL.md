@@ -23,21 +23,28 @@ You are the lead. You plan, decide, verify, and integrate. Workers write the cod
 
 ## The loop
 
-1. **Plan with ECC.** Use `/ecc:plan` (planner and architect agents), the `search-first` skill when a library choice is open, and `tdd-workflow` to decide the tests first. ECC is large (hundreds of skills, agents and commands), so look things up instead of guessing: `zc ecc search <words> [--kind skill|agent|command]` lists matches with descriptions and `zc ecc show skill:<name>` prints one. Stack defaults:
+1. **Decide, proportional to the task.** Claude owns the technical decisions; reuse what is already known (the user's request, `.zc/progress.md`, earlier task files and run results, docs/ARCHITECTURE.md, prior findings in this conversation) and read only the files needed to decide; decide when evidence is sufficient. Depth by size:
+   - Small (one or two files, known cause): read the target and the failing output, write a short contract, no planner or architect agent.
+   - Medium (a few files): read the targets and one representative example per pattern, give per-file instructions plus the dependencies the worker needs.
+   - Complex (new design, several concerns): use the existing ECC planning workflow (`/ecc:plan`, planner and architect agents, `search-first`, `tdd-workflow`) and split into contract-sized tasks.
+   - Unclear (cause or requirement not known): investigate the open questions yourself with targeted reads first, state what is still unknown, and dispatch no implementation task until the approach is decided.
+   ECC is large (hundreds of skills, agents and commands), so look things up instead of guessing: `zc ecc search <words> [--kind skill|agent|command]` lists matches with descriptions and `zc ecc show skill:<name>` prints one. Stack defaults:
    - Flutter/Dart: skills `dart-flutter-patterns`, `flutter-dart-code-review`; agents `flutter-reviewer`, `dart-build-resolver`; commands `/flutter-review`, `/flutter-test`, `/flutter-build`.
    - NestJS/TypeScript: skills `nestjs-patterns`, `backend-patterns`, `api-design`, `database-migrations`; agents `typescript-reviewer`, `database-reviewer`.
    - Always available: `verification-loop`, `security-review`, `/quality-gate`, `/build-fix`, agents `code-reviewer`, `security-reviewer`, `silent-failure-hunter`.
-2. **Split into tasks.** Each task is one concern that a worker can finish in about 30 minutes, with its own files. Write each to `.zc/tasks/T-00N.md` using `.zc/tasks/TEMPLATE.md`: `allowed:` paths (required, as narrow as possible), `verify:` commands, acceptance tests, and constraints. Give each worker the ECC knowledge it needs with an `ecc:` list in the task front matter, for example `ecc: [skill:dart-flutter-patterns, agent:flutter-reviewer]` (kinds: `skill:`, `agent:`, `command:`, `rules:`). Pick at most two or three per task: the text is pasted into the worker's prompt, and workers cannot run commands or hooks, so only the guidance travels. An unknown name stops the dispatch with a suggestion. Order them so dependencies come first. Tasks run strictly one after another.
+2. **Split into tasks.** Each task is one concern that a worker can finish in about 30 minutes, with its own files. Write each to `.zc/tasks/T-00N.md` using `.zc/tasks/TEMPLATE.md`: `allowed:` paths (required, as narrow as possible), `verify:` commands, and an `ecc:` list in the task front matter, for example `ecc: [skill:dart-flutter-patterns, agent:flutter-reviewer]` (kinds: `skill:`, `agent:`, `command:`, `rules:`). Pick at most two or three per task: the text is pasted into the worker's prompt, and workers cannot run commands or hooks, so only the guidance travels. An unknown name stops the dispatch with a suggestion. Order them so dependencies come first. Tasks run strictly one after another.
+   The task body follows the template sections from `zc init` (Objective, Decisions, Per file, Read first, Do not, Done when, If blocked, Verification). This is the execution contract: "Claude owns the technical decisions, the worker owns the implementation". The contract must be concise and specific enough that the worker does not repeat your investigation: name files, symbols and expected results, and put your decisions in it as facts. The worker still reads its target files and direct dependencies; a contract needs no more detail than the task's size requires.
 3. **Dispatch.** `zc dispatch --task .zc/tasks/T-001.md --json`. The call blocks until the worker finishes (up to the task's minutes), so give the Bash call a long timeout. Do not poll in a loop.
 4. **Read the result** and branch on the exit code and `status` (tables below).
 5. **Review. Never accept the worker's own summary as proof.**
-   - Read `git status` and `git diff` yourself.
-   - Run the project's tests yourself (skill `verification-loop`).
-   - Run the ECC review that fits the stack on the diff yourself (`/flutter-review`, `typescript-reviewer`, `/quality-gate`; `silent-failure-hunter` for error handling).
-   - For anything non-trivial, launch the `zc-reviewer` agent in a fresh context. Give it the task intent and tell it to inspect `git diff`. Add the ECC reviewer for the language (`flutter-reviewer`, `typescript-reviewer`, or `code-reviewer`). Auth, payments, or data handling also gets `security-review`.
+   - Review against the contract and the actual diff, not by redoing the investigation.
+   - Read `git status` and `git diff` yourself; check changed files are within `allowed`.
+   - When the status is OK, zc already ran the task's `verify` commands (see `verify` in the result); read that outcome and do not rerun the same commands. Run extra checks yourself only for things the verify commands do not cover.
+   - Run the ECC language reviewer and `zc-reviewer` only for non-trivial or risky changes (auth, payments, data handling, error handling, public API), not for every small task.
+   - Contradictions the worker reports: decide yourself and amend the contract; do not dispatch around them.
 6. **Decide.**
    - Accept: `git add -A && git commit -m "<conventional message>"`, then append one line to `.zc/progress.md` (date, task id, run id).
-   - Repair: write a feedback task naming exactly what is wrong, then `zc dispatch --repair <runId> --task <feedback.md> --json`. At most two repair rounds per task; after that `zc reject` and re-split the task smaller.
+   - Repair: write a feedback task naming the file, the cause and the exact fix (quote the failing tail), in the same contract form, then `zc dispatch --repair <runId> --task <feedback.md> --json`. At most two repair rounds per task; after that `zc reject` and re-split the task smaller.
    - Reject: `zc reject`. The work is saved in the run folder first.
 7. Repeat for the next task. At the end run the full verification and `/code-review` over the whole branch, then report to the user. Do not push or merge unless asked.
 
