@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "verify": [
+    [
+      "npm",
+      "test"
+    ]
+  ],
+  "defaults": {
+    "onLimit": "reset"
+  },
+  "worker": {
+    "permissions": "edit"
+  },
+  "ecc": {
+    "path": "",
+    "rulePacks": [
+      "common",
+      "typescript"
+    ]
+  }
+}
