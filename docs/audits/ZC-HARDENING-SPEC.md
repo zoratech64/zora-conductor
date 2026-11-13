@@ -3,6 +3,7 @@
 Status: authoritative for the hardening phase. Written 2026-11-13 against `main` at `adafef0` (version 0.2.0-alpha.1).
 Audience: the engineering model implementing the work, and the manager (Claude Code + `zc:orchestrate`) that dispatches it as scoped tasks.
 Every source reference below was verified against the working tree on the date above. Line numbers are approximate anchors; symbol names are exact.
+Updated 2026-11-13 on `hardening/zch` at `63bc634` (ZCH-001 implemented): added finding F8 and task ZCH-011 (git metadata integrity); invariants, order and completion criteria adjusted accordingly.
 
 ---
 
@@ -18,6 +19,7 @@ Every source reference below was verified against the working tree on the date a
 5. zc has no signal handlers; an interrupted run can leave a worker alive and a lock behind.
 6. A cooldown hint parsed from free text has no upper bound (reproduced: a 1510-day cooldown).
 7. Output capture drops everything after 8 MB, so a successful worker whose final `result` event falls past the cap is classified `empty` and rolled back (reproduced).
+8. Nothing protects git metadata. `git status` never lists `.git/`, so planted hooks, config (aliases, `core.fsmonitor`, filters, includes), ignore sources and index flags pass unseen, can hide out-of-scope edits from the scope check, and some make zc's own git calls execute code (reproduced; found during the ZCH-001 review).
 
 **Target condition.** Every untrusted execution phase (worker, verify) is followed by the same integrity checks; shared state is serialized; interruptions have a defined outcome; parsed hints are bounded; the worker's result is never lost to buffering; the documentation states exactly what zc guarantees and what it does not.
 
@@ -121,6 +123,27 @@ Severity scale: Critical / High / Medium / Low. Verification status: **Confirmed
 - Existing protections: `onStdoutLine` streaming already exists in `run()` (unused by `runAgy`); `--print-timeout` bounds runtime.
 - Remaining limitation: none once the result is captured from the stream.
 
+### F8. Git metadata is outside every integrity check
+- Severity: **High**. Status: **Confirmed and reproduced** (git 2.55.0.windows.4, temp repos; real `agy`'s ability to write under `.git/` with its edit tools **requires real-runtime verification**, but verify commands and `permissions: all` can do it regardless).
+- Files: `src/gitx.mjs` `git` (only `-c core.quotepath=off`), `statusEntries`, `savePartial` (`git diff HEAD --binary`), `rollbackPaths` (`git restore`); `src/scope.mjs` `DEFAULT_FORBIDDEN` (`.git/**`, `**/.git/**`); `src/dispatch.mjs` `dispatch` (worker phase: `restoreZc` ≈ line 210, `G.dirtyState` ≈ 228, HEAD check ≈ 230; verify phase: `restoreZc` ≈ 285, HEAD ≈ 306, `statusEntries` ≈ 315), `finish` (calls `G.dirtyState`); `rejectRun`. No code resolves the git directory; the only `.git` test is the `isForbidden` unit test.
+- Root cause: every integrity check reads repository state through `git status`, which never lists `.git/` (probe: a planted `.git/hooks/pre-commit` gives 0 status lines). `DEFAULT_FORBIDDEN`'s `.git/**` entries therefore never match anything. Git metadata also controls what `git status` reports and which external commands git runs.
+- Reproduced blind spots (all ended with the change invisible to `git status`, or `OK` through `dispatch`):
+  - `.git/hooks/pre-commit` and a `.git/config` alias planted by a verify command: run ends `OK`.
+  - `.git/info/exclude` gaining `other/` hides a new out-of-scope `other/x.txt` from the scope check.
+  - `git update-index --skip-worktree` (flag `S`) or `--assume-unchanged` (flag `h`) hides an out-of-scope modification of a tracked file.
+  - `core.fsmonitor` set in local config runs its command on `git status` and on `git diff HEAD`; `-c core.fsmonitor=false` prevents it; `git rev-parse` does not run it.
+  - `diff.external` runs on `git diff HEAD --binary` (`--no-ext-diff` prevents it); a `filter.<x>.clean` command assigned through `.git/info/attributes` runs on `git diff HEAD` even with `--no-ext-diff --no-textconv`.
+  - `core.hooksPath` redirects hooks anywhere (relative to the work tree, or absolute outside the repository); `git rev-parse --git-path hooks` resolves the effective directory.
+  - Include files: values from `include.path` / `includeIf.*.path` appear only with `--includes`, attributed to the included file by `--show-origin`. A relative include path resolves against the directory of the including config file. A missing include target is silently ignored, so a pre-existing dangling include becomes live when the file is created; an include target inside the work tree can be hidden by `.gitignore`.
+  - Moving another branch (`update-ref refs/heads/other`) is invisible to status and to the existing HEAD/branch check.
+  - Linked worktree: `.git` is a file (`gitdir: <main>/.git/worktrees/<name>`); git-dir (index, HEAD, `config.worktree`) is private, but hooks, `config`, `info/exclude` and refs live in the shared common dir. Rewriting the `.git` pointer to a decoy repository made plain `git rev-parse` report the decoy; rewriting `<git-dir>/commondir` did the same for the common dir. Pinned `GIT_DIR`/`GIT_COMMON_DIR`/`GIT_WORK_TREE` neutralised both.
+  - Per-command execution (marker probe, repo config wiring every program-launching key): `core.fsmonitor` ran on `status`, `ls-files -s/-v`, `update-index`, `restore`, `rm --cached` and `diff HEAD`; a `post-index-change` hook ran on `status`, `update-index` and `restore`; clean/smudge filters and `diff.external` ran on `diff HEAD`; smudge ran on `restore`. With `-c core.fsmonitor=false -c core.hooksPath=<empty dir>`, fsmonitor and hooks never ran, but filters still ran on `diff` and `restore`, and `diff.external` on `diff` without `--no-ext-diff`. `rev-parse`, `symbolic-ref`, `cat-file -e`, `config --list` and `for-each-ref` ran nothing even plain.
+  - Removing a user's pre-existing `skip-worktree` flag exposes their hidden local edit in `git status` (`M b.txt`); zc would then treat it as the worker's change and roll it back (data loss).
+- Scenario: a worker (or a verify command running worker-written code) sets `core.fsmonitor` or a clean filter in `.git/config`; zc's own `git status`/`git diff HEAD` right after the run executes it as the manager. Or it plants `pre-commit`, which runs on the manager's next `git commit`. Or it hides an out-of-scope edit with `info/exclude` or `skip-worktree`, so the run ends `OK` with the edit in the tree.
+- Consequences: code execution as the manager, triggered by zc itself or by the manager's next git command; silent scope bypass that defeats ZCH-001.
+- Existing protections: ZCH-001's post-verify HEAD/branch check (catches a moved current branch only); manual review of `git status`/`git diff` (which cannot show any of the above).
+- Remaining limitations after ZCH-011: global/system git config, global hook directories and other files outside the repository and its git dirs are not covered (OS isolation, section G); metadata of submodules (`.git/modules/*`) is not covered; refs and shared metadata in linked worktrees are detected, not restored.
+
 ---
 
 ## D. Target safety invariants
@@ -140,6 +163,11 @@ The implementation must preserve or establish all of the following. Each has at 
 11. **Fail closed on inspection errors** (existing): any error other than ENOENT/ENOTDIR while reading `.zc/` ends the run as `NEEDS_HUMAN`; the post-verify check inherits this.
 12. **Lock takeover is single-writer.** Only one process can perform a takeover at a time, and it unlinks only the record it read.
 13. **Exit-code contract unchanged.** 0 OK · 1 failed · 2 no capacity · 3 needs a human. New statuses map onto these codes.
+14. **Git metadata integrity after every untrusted phase.** The `.git` entry and git-dir identity, hooks (effective hooks directory), local and worktree config including include files, ignore/attribute/history sources, index flags with the content of flagged files, and refs are compared with the pre-run baseline after the worker and after verify; no difference reaches `OK`.
+15. **Pinned git directory.** The git-dir, common-dir and work tree are resolved once before the first worker and pinned for every zc git call of that dispatch; a changed pointer is repaired from recorded bytes, a changed git-dir identity ends `NEEDS_HUMAN` with no further git command.
+16. **No unsafe git command before the gate.** Every zc git call is hardened (`core.fsmonitor=false`, `core.hooksPath=<empty dir>`, pinned environment); after an untrusted phase only the inert commands of ZCH-011 §11.2 run until the gate has proven config, attribute sources and hooks equal the baseline; `savePartial` adds `--no-ext-diff --no-textconv`.
+17. **No blanket restore of git metadata.** zc restores only individual small files it snapshotted, re-sets or clears only index flags whose state it saw change, and saves every changed version first; refs, objects, index content and shared common-dir metadata of linked worktrees are never rewritten automatically.
+18. **Pre-existing hidden user state is preserved.** Index flags and the content of flagged files that existed before the run are never changed by zc and never rolled back as the worker's.
 
 ---
 
@@ -182,7 +210,170 @@ Conventions: ESM, 2-space, single quotes, `node:test` + `node:assert/strict`, he
 - Acceptance criteria: `test/contract.test.mjs` keeps passing (it asserts specific strings in `SKILL.md` and `DEFAULT_PREFIX`); a grep for "should keep them from running" returns nothing; the README section names each of the six layers.
 - Required tests: extend `test/contract.test.mjs` with one assertion that README contains the new subsection heading.
 - Regression risks: none in code.
-- Dependencies: ZCH-001 merged (so the text describes real behaviour). Suggested `allowed`: `README.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`, `skills/orchestrate/SKILL.md`, `test/contract.test.mjs`.
+- Dependencies: ZCH-001 and ZCH-011 merged (so the text describes real behaviour, including git metadata). Suggested `allowed`: `README.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`, `skills/orchestrate/SKILL.md`, `test/contract.test.mjs`.
+
+### ZCH-011 · Git metadata integrity · **P0**
+- Problem: F8. Hooks, config, ignore/attribute sources, index flags, refs and the `.git` pointer can be changed by the worker or by verify without any zc check seeing it. Several of those changes make zc's own git calls run attacker-chosen programs, retarget them to another repository, or make zc roll back the user's own hidden edits.
+- Priority: **P0, before ZCH-002.** Reproduced end to end through `dispatch`; gives code execution as the manager through zc's own post-run git calls (no further manager mistake needed) or on the next `git commit`; its hiding variants defeat ZCH-001; one variant destroys pre-existing user edits. Exploitable through verify without real accounts.
+- Nature: integrity **detection and repair** of repository-level git metadata, plus hardening of zc's own git invocations. It is not a sandbox and does not contain a malicious process (threat model below and section G).
+
+#### 11.1 Threat model and trust assumptions
+- **Trusted:** the zc process, Node, the `git` binary, zc's state folder, and the repository and its git metadata **as they are when the dispatch starts** (the baseline is the user's own state). Global and system git config and any global hooks directory are the user's; they are outside the boundary (11.8).
+- **Untrusted:** everything the worker and the verify commands do while they run, including every file they write anywhere inside the work tree, the git-dir and the common-dir.
+- **Assumed:** when `runAgy` / `runVerify` return, the processes they started have exited. A process they leave running in the background can change metadata after a check (time-of-check/time-of-use). zc narrows this window: its git calls always carry the overrides in 11.2, so the programs that remain reachable are filters and diff drivers, and only during the short span between the integrity gate and zc's next git call. zc does not close it.
+- **Not protected against:** a process with unrestricted manager-level filesystem access that targets zc itself (its state folder, snapshots, run records or source), global/system config, or anything outside the repository's work tree and git dirs. Containing such a process needs OS isolation (section G).
+
+#### 11.2 Trusted git directory resolution and zc's git invocations
+- **Resolution, once per dispatch, before the first worker:** run from `root`, with no `GIT_*` variables in the environment: `git rev-parse --show-toplevel --absolute-git-dir --git-common-dir`. Make the common-dir absolute (relative to `root`). Record the layout: `{ workTree, gitDir, commonDir, linked: gitDir !== commonDir, dotGit: { kind: 'dir'|'file', bytes (if file) }, worktreeFiles: bytes of <gitDir>/gitdir and <gitDir>/commondir (if linked), identity: { gitDir, commonDir } each as realpath plus lstat dev/ino }`. Store it in `result.gitLayout`. Fail closed (`NEEDS_HUMAN`, no worker started) if: `.git` at `root` is missing or a symlink; the git-dir or common-dir is a symlink, missing, or not a directory; `rev-parse` fails; `workTree` ≠ `root`; the repository is bare.
+- **Pinning:** from that moment until the dispatch ends, every zc git call for this `root` runs with the environment stripped of all inherited `GIT_*` variables and then `GIT_DIR=<gitDir>`, `GIT_COMMON_DIR=<commonDir>`, `GIT_WORK_TREE=<root>`. zc never re-resolves the git dir during a dispatch. Probe evidence: with the worktree's `.git` pointer rewritten to a decoy repository, plain `git rev-parse` reported the decoy; with the pinned variables it reported the original and `status` worked; rewriting `<gitDir>/commondir` was likewise neutralised by `GIT_COMMON_DIR`.
+- **Identity check after each untrusted phase (filesystem only, first step of the gate):** `.git` kind and pointer bytes, the linked-worktree `gitdir`/`commondir` file bytes, and the realpath plus dev/ino of git-dir and common-dir must match the record. A changed pointer or worktree file with an unchanged git-dir identity is restorable (write back the recorded bytes, evidence saved). A changed `.git` kind, or a changed git-dir/common-dir identity, ends `NEEDS_HUMAN` with **no further git command** and no restore. Where the platform reports dev/ino as 0, realpath equality alone is used and recorded as `identity: 'path-only'`.
+- **Hardened invocation (all zc git calls, always):** `git -c core.quotepath=off -c core.fsmonitor=false -c core.hooksPath=<noHooksDir> ...` with the pinned environment, where `noHooksDir` is an empty directory zc creates under the project's state folder and verifies empty before use (recreated if not; `NEEDS_HUMAN` if that fails). `spawnSync` gets a timeout (60 s for the inert commands below, the existing behaviour otherwise); a timeout is `NEEDS_HUMAN` (protects against an include file replaced by a FIFO or similar).
+- **Inventory of git commands zc runs after an untrusted phase, with probe evidence** (git 2.55.0.windows.4; repo config wired `core.fsmonitor`, a `post-index-change` hook, `filter.x.clean/smudge`, `diff.external` and a textconv driver to marker scripts, attributes in `.git/info/attributes`):
+
+| Command (zc call site) | Runs, plain | Runs, hardened | Class and treatment |
+|---|---|---|---|
+| `rev-parse --verify HEAD` (`head`), `symbolic-ref --short -q HEAD` (`branch`), `cat-file -e HEAD:<p>` (`inHead`) | nothing | nothing | Inert. Allowed any time after the identity check |
+| `config --list --show-origin --show-scope --includes` (new) | nothing | nothing | Inert. Allowed after the identity check |
+| `for-each-ref` (new) | nothing | nothing | Inert. Allowed after the identity check |
+| `ls-files -s -z` (`indexState`), `ls-files -v -z` (new) | fsmonitor | nothing | Inert **only when hardened** |
+| `update-index --[no-]skip-worktree / --[no-]assume-unchanged` (new) | fsmonitor, hook | nothing | Inert **only when hardened**; writes the index |
+| `rm -r -f --cached --ignore-unmatch` (`rollbackPaths`) | fsmonitor | nothing | Inert only when hardened; runs only after the gate passes |
+| `status --porcelain=v1 -z --untracked-files=all` (`statusEntries`, `dirtyState`, `finish`) | clean filter, fsmonitor, hook | nothing observed; may run clean filters when it must hash files | **Gated:** only after the gate has verified config, attribute sources and hooks equal the baseline |
+| `diff HEAD --binary` (`savePartial`) | clean, smudge, `diff.external`, fsmonitor | clean, smudge, `diff.external` | **Gated** and must add `--no-ext-diff --no-textconv`; probe: with those flags, hardened, only the clean filter ran |
+| `restore --source=HEAD --staged --worktree` (`rollbackPaths`) | smudge, fsmonitor, hook | smudge | **Gated** |
+
+- **Filters are not disabled by any flag.** `--no-ext-diff`/`--no-textconv` do not stop clean or smudge filters (probe), and filter driver names are unknown in advance. Filters are therefore made safe by **ordering**: gated commands run only after the gate has proven that the effective local/worktree config and the protected attribute sources equal the baseline. Filters and diff drivers that then run are the user's baseline programs. In-tree `.gitattributes` can only route files to drivers defined in config; the new scope rule in 11.6 keeps an out-of-scope `.gitattributes` or `.gitignore` change from passing.
+- **No unsafe command for discovery:** the gate discovers changes with filesystem reads and the inert commands above only. No gated command runs until the gate has passed for the current phase. If the gate does not pass, the run ends `NEEDS_HUMAN` and `finish` captures no `workerState` (no `git status`).
+- `toplevel()` in `cli.mjs` keeps plain discovery for choosing `root` (before a dispatch, the repository is trusted). `rejectRun` must compare its fresh resolution with the `gitLayout` recorded in the run and refuse on any mismatch, `--force` included (11.7).
+
+#### 11.3 Protected metadata
+
+"Private" = inside the git-dir; or inside the common-dir when not `linked`; or inside the work tree. Paths are taken from the recorded layout plus `git rev-parse --git-path <p>` evaluated **once, at baseline**, under the pinned environment.
+
+| Area | Baseline (before the worker) | After each untrusted phase | Repair |
+|---|---|---|---|
+| `.git` entry, pointer, worktree files, dir identity | 11.2 | 11.2 identity check, first | Pointer/worktree file bytes restorable; kind or identity change: `NEEDS_HUMAN` |
+| Hooks | Recursive walk of the effective hooks dir (`--git-path hooks`, honours `core.hooksPath`): per file SHA-256, size and, on POSIX, the executable bits; directory set. A symlink anywhere in it, or an unreadable entry: fail closed before the worker | Same walk of the **baseline** hooks path (a `core.hooksPath` change is caught as a config change) | Private: restore changed/removed files from copies, delete added files and added empty dirs. Not private (shared common-dir of a linked worktree; a `core.hooksPath` outside the work tree and git dirs): detect only, `NEEDS_HUMAN` |
+| Config files | Bytes and copies of `--git-path config`, `--git-path config.worktree` and every origin file of `local`/`worktree` rows from `config --list --show-origin --show-scope --includes`. An origin that is not a regular file (for example `blob:` or `command line:`): fail closed | Byte compare of every baseline file, filesystem only | Private: restore bytes; delete a newly created `config.worktree` |
+| Effective config | The `local`/`worktree` rows of the same listing, as text | After the file restores: listing again (inert), compared as text. **No allowlist** | Still different (for example a dangling baseline include whose target now exists outside the private area, or a non-private origin): `NEEDS_HUMAN` |
+| Ignore, attribute and history sources | Bytes and copies of `info/exclude`, `info/attributes`, `info/sparse-checkout`, `info/grafts`, `shallow`, `objects/info/alternates` (via `--git-path`) | Byte compare, filesystem only | Private: restore bytes or delete if newly created. Not private: `NEEDS_HUMAN` |
+| Index flags | 11.4 | 11.4 | 11.4 |
+| Refs | `for-each-ref --format='%(refname)%00%(objectname)'`, excluding `refs/remotes/` | Same listing (inert) | Never rewritten: any difference, including a concurrent commit in another linked worktree, is `NEEDS_HUMAN` listing each ref old → new |
+
+Caps: per copied file 2 MB, total 8 MB. Over a cap, unreadable (any error other than ENOENT/ENOTDIR), a symlink where a file or directory is expected, or any parse failure of git output: **fail closed** with `NEEDS_HUMAN` (before the worker if found at baseline).
+
+Not compared (they change during a normal run and carry no execution path, or are outside the boundary): index bytes (a plain `status` rewrites them; probe), objects and packs, loose vs packed refs (refs compare by value), reflogs, `ORIG_HEAD`, `FETCH_HEAD`, `COMMIT_EDITMSG`, `refs/remotes/*`, `.git/lfs`, `.git/modules/*`.
+
+#### 11.4 Index flags
+- Baseline (inert `ls-files -v -z`, hardened): the set `A` of assume-unchanged paths (lowercase tag) and `S` of skip-worktree paths (tag `S`), and for every path in `A ∪ S` a content fingerprint (`fingerprint()` from `src/snapshot.mjs`) and a copy (caps as above). These files are invisible to `git status`, so their content is not covered by `workerState`.
+- After each untrusted phase (after the config gate, before any gated command): read the flags again (inert, hardened).
+  - Flags **added** to paths outside the baseline sets: clear exactly those, with `update-index --no-assume-unchanged` / `--no-skip-worktree -- <paths>` (hardened). The edits they hid then appear in `git status` and go through the scope check.
+  - Flags **removed** from baseline paths: set exactly those again (`--assume-unchanged` / `--skip-worktree`). Without this, the user's hidden local edits appear in `git status` and zc would roll them back as the worker's (probe: removing a user's `skip-worktree` exposed `M b.txt`).
+  - **Content** of a baseline-flagged path changed: restore the baseline bytes from the copy (evidence saved), and count it as a violation.
+  - Pre-existing user flags and their content are never changed in any other way.
+- Any repair that fails, a path that cannot be copied, or `ls-files` output that cannot be parsed: `NEEDS_HUMAN`.
+
+#### 11.5 The integrity gate, its order and outcomes
+After `runAgy` returns, and again after `runVerify` returns, zc runs this gate **before anything else** (before `restoreZc`, before any `G.statusEntries`/`G.dirtyState`), and only then the existing `.zc/`, HEAD/branch and scope checks:
+1. Identity check (11.2), filesystem only.
+2. Filesystem comparisons and private restores: hooks, config files, ignore/attribute/history sources, flagged-file contents (11.3, 11.4). Save every changed version to `git-meta-violations-<n>` (worker) or `git-meta-violations-verify-<n>` (verify) before restoring.
+3. Inert git comparisons: effective config, then index flags (with their repairs), then refs.
+4. Outcome:
+   - Nothing changed: continue with the existing checks.
+   - Changes found and **all** repaired: continue with the existing checks (now safe to run the gated commands), then end `SCOPE_VIOLATION` with `phase` (`worker`/`verify`), the metadata paths added to `forbidden`, and `gitMeta` entries on the result. A metadata-only change must not end `NO_CHANGES` or `DENIED` (extend the `!changed.length && !zcViolations.length` guard). The usual save-and-rollback of the work-tree result follows.
+   - Anything not repaired, detect-only, ambiguous, or a step that throws: `finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { phase, gitMeta, gitMetaUnrestored: true, nextAction }, { captureState: false })`. No gated git command runs and nothing is rolled back. `nextAction` lists each path and change, names the snapshot and evidence folders, and says not to run git commands in this repository until the listed items are checked by hand.
+5. Record entries on `attempt.gitMeta` / `attempt.gitMetaVerify` with `{ area, path, change, restorable, restored, detail }`; `path` relative to `root` when inside it, else absolute.
+
+`finish(status, code, extra, { captureState = true } = {})` skips `G.dirtyState` when `captureState` is false. Every other `finish` call keeps today's behaviour.
+
+#### 11.6 Scope rule for ignore and attribute files in the work tree
+A change to any `.gitignore` or `.gitattributes` file in the work tree passes the scope check only if that exact path is listed in `allowed` (a directory or glob entry is not enough). Reason: these files decide what `git status` shows and which filter or diff driver git applies, so a change inside a broadly allowed directory can hide or reroute other files. After any rollback, zc re-runs `statusEntries`. A path that is now visible but was not part of the recorded result, for example a file a rolled-back `.gitignore` had hidden, makes `rolledBack` false and is listed in `revealedAfterRollback`.
+
+#### 11.7 Across runs: reject, repair and the next dispatch
+- `rejectRun`: refuse, `--force` included, when the current layout does not match the run's recorded `gitLayout`. Refuse without `--force` when the run has `gitMetaUnrestored: true`. Use the same hardened, pinned invocation as dispatch.
+- Next dispatch, including `--repair`: if the project's latest run has `gitMetaUnrestored: true` and no acknowledgement, end `NEEDS_HUMAN` before any worker starts.
+- New command `zc ack <runId>`: after the user has checked the reported items by hand, it records `gitMetaAcknowledged: <ISO time>` in that run's `result.json` and changes nothing else. It is additive.
+
+#### 11.8 Outside the boundary (documented, not protected)
+- Global and system git config, `~/.gitconfig` includes, and global hook directories configured there. The hardened invocation neutralises a global `core.fsmonitor` and global hooks for zc's own calls. A change to those files by the worker is not detected; no safe, testable repository-level mechanism was established for them.
+- Submodule metadata (`.git/modules/*`) and nested repositories.
+- Anything outside the work tree and the two git dirs, and any process still running after its phase (11.1).
+- First-time hook installers such as Husky. A first install during verify changes config and hooks, so the run ends `SCOPE_VIOLATION`. The user must run the installer by hand before dispatching. A repeat install that writes identical bytes is not a change. There is no allowlist.
+
+#### 11.9 Implementation steps
+Each step is its own zc dispatch, review and commit, in this order. A step may not weaken any criterion of an earlier step.
+
+| Step | Scope | Files (suggested `allowed`) | Criteria |
+|---|---|---|---|
+| 011-A | Layout resolution, identity, pinned and hardened git invocation, `noHooksDir`, timeouts, `--no-ext-diff --no-textconv` in `savePartial`. Dispatch: resolve and pin at start, unpin in `finally`, record `gitLayout` | `src/gitmeta.mjs` (new: `gitLayout`, `checkIdentity`), `src/gitx.mjs`, `src/dispatch.mjs` (pin/unpin, layout fail-closed only), `test/gitmeta.test.mjs` (new) | A1–A9 |
+| 011-B | Baseline snapshot and filesystem plus inert comparisons and private restores for hooks, config files, effective config, info files and refs. Unit level, no dispatch wiring | `src/gitmeta.mjs`, `test/gitmeta.test.mjs` | B1–B10 |
+| 011-C | Index flags and flagged-file content (11.4). Unit level | `src/gitmeta.mjs`, `test/gitmeta.test.mjs` | C1–C5 |
+| 011-D | Gate wiring in both phases, outcomes, `finish` `captureState`, the 11.6 scope rule and the post-rollback reveal check, `formatResult` line | `src/dispatch.mjs`, `src/scope.mjs`, `test/gitmeta.test.mjs`, `test/safety.test.mjs` | D1–D12 |
+| 011-E | `rejectRun` guards, next-dispatch guard, `zc ack`, docs | `src/dispatch.mjs`, `src/cli.mjs`, `test/gitmeta.test.mjs`, `docs/ARCHITECTURE.md`, `skills/orchestrate/SKILL.md` | E1–E5 |
+
+#### 11.10 Acceptance criteria
+Tests live in `test/gitmeta.test.mjs` unless noted. Every repository is built with `makeRepo` (or `git init`) under `tmpdir()`. A test marked ★ must prove that a malicious configured program **did not run**, by the absence of a per-test marker file written by a `#!/bin/sh` script. Git for Windows runs these through its bundled `sh`. Skip with a stated reason if `sh` is unavailable. Worker-side writes use the fake agy `write:` map, which accepts `.git/...` paths. Verify-side changes use `[process.execPath, '-e', script]` with `execFileSync('git', …)`.
+
+- **011-A**
+  - A1 ★ With `core.fsmonitor` and a `post-index-change` hook wired to markers in the repo config, each zc helper (`head`, `branch`, `statusEntries`, `dirtyState`, `pathStates`, `rollbackPaths`, `savePartial`) runs without creating the fsmonitor or hook marker.
+  - A2 ★ With `diff.external` wired to a marker, `savePartial` does not create it, and its patch is still a valid `git apply --check` patch.
+  - A3 A linked worktree whose `.git` pointer is rewritten to a decoy repository after pinning: `head`/`branch`/`statusEntries` still report the original repository. The same holds for a rewritten `<gitDir>/commondir`.
+  - A4 `gitLayout` on a normal repository, a linked worktree and a `--separate-git-dir` repository returns the same git-dir and common-dir as `git rev-parse`, sets `linked` correctly, and records the pointer bytes.
+  - A5 Fail closed before any worker starts (`calls.log` absent) when `.git` is a symlink, the git-dir is a symlink, or the repository is bare.
+  - A6 Inherited `GIT_DIR`/`GIT_INDEX_FILE` in zc's own environment do not change which repository or index zc reads.
+  - A7 `checkIdentity`: a restorable result for a rewritten pointer file with an unchanged git-dir. A non-restorable result (the caller must run no git command) when the git-dir was replaced by a different directory at the same path (rename it away, copy it back), or when `.git` changed kind.
+  - A8 A file placed in `noHooksDir` before a zc git call is not executed as a hook. zc recreates the directory empty, or fails closed if it cannot.
+  - A9 POSIX only: a baseline `include.path` whose target is replaced by a FIFO makes the inert config listing time out. The result is `NEEDS_HUMAN`, not a hang (timeout injectable for the test).
+- **011-B**
+  - B1 Hook added, modified or removed in a private hooks dir is detected and restored, with evidence saved.
+  - B2 On POSIX, an executable bit added to an existing hook is detected and restored (skip on `win32`).
+  - B3 A `core.hooksPath` pointing to an ignored in-tree directory: a hook written there is detected and removed.
+  - B4 A `core.hooksPath` change in config is caught as a config change, and the baseline hooks path keeps being checked.
+  - B5 An `[alias]` appended to `.git/config` is restored byte for byte.
+  - B6 A baseline include file inside the work tree, hidden by `.gitignore`, is modified: detected and restored.
+  - B7 A dangling baseline include gets its target created outside the private area: `NEEDS_HUMAN`, file left in place.
+  - B8 `info/exclude` and `info/attributes` changes are restored. A newly created `info/attributes` is deleted.
+  - B9 A new branch or tag is detected as a ref change and left in place. A `refs/remotes/*` change is ignored. A `git pack-refs --all` is no change.
+  - B10 A hooks file of 3 MB, a symlink in the hooks dir, or a config origin that is not a regular file fail closed at baseline. On POSIX non-root, an unreadable hooks dir fails closed after the phase.
+- **011-C**
+  - C1 Added `skip-worktree` on an out-of-scope edited tracked file is cleared and the edit becomes visible to `statusEntries`. The same holds for `assume-unchanged`.
+  - C2 A baseline user `skip-worktree` with a local edit, whose flag is removed during the phase, gets the flag back, and the user's content is unchanged.
+  - C3 Content of a baseline-flagged file changed during the phase is restored from the copy and reported.
+  - C4 Pre-existing flags that nobody touched are unchanged after the gate.
+  - C5 Output of `ls-files -v` that cannot be parsed, or a flagged file over the copy cap, gives `NEEDS_HUMAN`.
+- **011-D** (dispatch end to end)
+  - D1 The original reproduction: verify plants `.git/hooks/pre-commit` and a config alias. The run ends `SCOPE_VIOLATION`, `phase: 'verify'`, with both repaired.
+  - D2 A worker writes `.git/hooks/pre-commit`: `SCOPE_VIOLATION`, `phase: 'worker'`, hook removed. A run that only touches metadata ends `SCOPE_VIOLATION`, not `NO_CHANGES`.
+  - D3 ★ Verify sets `core.fsmonitor` to a marker script: after `dispatch` returns the marker is absent and the config is restored.
+  - D4 ★ Verify defines `filter.x.clean`/`smudge` and assigns them via `.git/info/attributes`, and the worker's file is out of scope, which forces `savePartial` and `rollbackPaths`: markers absent, config and attributes restored.
+  - D5 ★ Verify plants a `post-index-change` hook: marker absent after the rollback.
+  - D6 The worker writes `other/x.txt` and appends `other/` to `info/exclude`: `other/x.txt` is reported in `outOfScope`.
+  - D7 Verify edits tracked `README.md` and sets `skip-worktree` on it: `README.md` is in `outOfScope` with `phase: 'verify'` and is rolled back. The `assume-unchanged` variant behaves the same.
+  - D8 A user-flagged `skip-worktree` file with a local edit survives a run whose worker is rolled back for quota, and survives a `SCOPE_VIOLATION` rollback. This is the data-loss regression test.
+  - D9 Verify creates `refs/heads/other`: `NEEDS_HUMAN`, `gitMetaUnrestored: true`, no `workerState` in `result.json`, nothing rolled back.
+  - D10 A linked worktree: verify writes into the shared hooks dir, giving `NEEDS_HUMAN`, detect only. A worker that rewrites the worktree's `.git` pointer gets it restored, giving `SCOPE_VIOLATION`.
+  - D11 `.gitignore` or `.gitattributes` changed inside an allowed directory but not listed by exact path is out of scope. After rolling back a `.gitignore` that hid files, `revealedAfterRollback` lists those files and `rolledBack` is false.
+  - D12 Normal operations still end `OK`:
+    - verify runs `git status`, `git diff`, `git log`, `git stash list` and `git pack-refs --all`;
+    - pre-existing `core.hooksPath` (Husky already installed), `core.fsmonitor` and a baseline clean/smudge filter, which still applies during rollback (output equals the filter's);
+    - dispatch from a linked worktree and from a `--separate-git-dir` repository.
+- **011-E**
+  - E1 `rejectRun` refuses a layout mismatch, even with `force`.
+  - E2 `rejectRun` refuses a run with `gitMetaUnrestored` unless `force` is given.
+  - E3 The next dispatch after an unacknowledged `gitMetaUnrestored` run ends `NEEDS_HUMAN` and no worker starts.
+  - E4 After `zc ack <runId>`, the next dispatch proceeds. `zc ack` changes no file other than that run's `result.json`.
+  - E5 `test/contract.test.mjs` still passes. ARCHITECTURE and the skill describe the gate, the outcomes and 11.8.
+- **All steps:** every existing test passes unchanged. This includes the staged-change protection tests, the content-verified rollback tests and the ZCH-001 post-verify tests. `npm run check` passes.
+
+#### 11.11 Risks, dependencies, verification
+- **Regression risks:**
+  - Repositories that legitimately change git metadata during verify now fail. This covers first-time hook installers, tools that write config, and IDEs writing config or refs during a run. The `nextAction` must say what changed.
+  - A concurrent commit in another linked worktree ends the run `NEEDS_HUMAN`. This is by decision.
+  - `core.fsmonitor=false` makes zc's own `status` slower on repositories that rely on an fsmonitor daemon.
+  - The 11.6 rule rejects `.gitignore`/`.gitattributes` edits not listed by exact path.
+  - A mistake in gate ordering would reintroduce code execution. The ★ tests are the guard.
+- **Dependencies:** ZCH-001 (implemented, `63bc634`). ZCH-011 must land before ZCH-002 and before ZCH-003, which documents it. All of its steps edit files that ZCH-002 also edits (`src/dispatch.mjs`), so dispatch them strictly in sequence.
+- **Manual verification per step:** before each commit, compare HEAD, branch, `.zc/` hashes, the local git config, `.git/hooks`, `.git/info/*`, refs, stash and `git ls-files -v` flags against a baseline saved outside the repository before dispatch. This is the ZCH-001 procedure. Each step's own verify run executes under the protection of the previous steps only.
 
 ### ZCH-004 · Serialized lock takeover, optional wait, recoverable PID reuse · **P1**
 - Problem: F3.
@@ -271,7 +462,9 @@ Conventions: ESM, 2-space, single quotes, `node:test` + `node:assert/strict`, he
 
 **Automated (every task).** `npm test` and `npm run check` green on Node 22 and 24, Ubuntu and Windows (CI matrix in `.github/workflows/ci.yml`). The Linux job must not skip the `.zc/` permission tests (existing CI step enforces this). No test may write inside the repository; use `mkdtempSync` under `tmpdir()` and `makeHome()`.
 
-**New regression tests (by task).** ZCH-001: verify-time out-of-scope write, `.zc/` write, commit, in-scope write, `VERIFY_FAILED` + tamper precedence. ZCH-002: three parser cases, far-future dispatch case, config validation. ZCH-004: stale-lock race (child processes, 20 iterations), `waitMs`, error text, doctor warning. ZCH-005: write-contention child processes, atomic `pickAndMark`. ZCH-006: >8 MB stream ends `OK`, truncation flags recorded. ZCH-007: SIGTERM end-to-end (POSIX), `onSpawn`. ZCH-008: allowlist unit tests, config validation. ZCH-009: lease cases. ZCH-010: recorded-fixture parse test.
+**New regression tests (by task).** ZCH-001: verify-time out-of-scope write, `.zc/` write, commit, in-scope write, `VERIFY_FAILED` + tamper precedence. ZCH-002: three parser cases, far-future dispatch case, config validation. ZCH-004: stale-lock race (child processes, 20 iterations), `waitMs`, error text, doctor warning. ZCH-005: write-contention child processes, atomic `pickAndMark`. ZCH-006: >8 MB stream ends `OK`, truncation flags recorded. ZCH-007: SIGTERM end-to-end (POSIX), `onSpawn`. ZCH-008: allowlist unit tests, config validation. ZCH-009: lease cases. ZCH-010: recorded-fixture parse test. ZCH-011: criteria A1–A9, B1–B10, C1–C5, D1–D12, E1–E5 in §11.10, per implementation step (pinning and hardening, metadata compare and repair, index flags, dispatch gate, cross-run guards), including the ★ non-execution tests and the D12 normal-operation tests.
+
+**Git metadata tests (ZCH-011).** Build every repository with `makeRepo` under `tmpdir()`; never point a test at the project's own `.git`. Marker-file tests prove "zc did not execute it" by absence, so the marker path must be unique per test. Scripts used as hooks, fsmonitor or filters are `#!/bin/sh`, which Git for Windows runs through its bundled `sh` (verified on this machine); skip a case with a stated reason if `sh` is unavailable.
 
 **Concurrency tests.** Always real processes (`spawn(process.execPath, ['-e', …])` or the CLI), never in-process promises: the locks are PID-based. Seed the race deterministically (pre-create the stale lock, start both children, wait for both exits, assert at most one `result.json` or lock-success marker).
 
@@ -295,10 +488,12 @@ Six layers, from weakest to strongest. zc currently implements the first three f
 |---|---|---|---|
 | Prompt-level | `DEFAULT_PREFIX`, task body, `allowed`/`forbidden` lists in the prompt (`src/prompt.mjs`) | Advisory only; a model may ignore it | Unchanged: advisory |
 | Tool permission | `--mode accept-edits` / `plan` / `--dangerously-skip-permissions` (`agyRunArgs`) | Limits the *model's tools* during the worker phase; not enforced by zc, depends on `agy` honouring it | Unchanged, now documented as a usability control, not a security boundary |
-| Git-based repository enforcement | clean-tree guard, `partitionByScope`, `.zc/` snapshot/restore, HEAD/branch check, content-verified rollback | Enforced for the worker phase; **not** for verify | Enforced after the worker phase **and** after verify (ZCH-001); detects and undoes repository-visible effects only |
+| Git-based repository enforcement | clean-tree guard, `partitionByScope`, `.zc/` snapshot/restore, HEAD/branch check, content-verified rollback | Enforced for the worker phase; **not** for verify; git metadata (`.git/`) never checked; zc's own git calls run whatever the repository config says | Enforced after the worker phase **and** after verify (ZCH-001); git metadata compared against the baseline, private files and index flags repaired, refs and linked-worktree shared metadata detect-only; zc's git calls pinned and hardened and gated behind the metadata check (ZCH-011); detects and undoes effects inside the work tree and its git dirs only |
 | Process isolation | separate `agy` process, timeout, `killTree`, per-project lock | Worker and verify run as the manager's user with the manager's environment | Worker gets an allowlisted environment (ZCH-008); interruption kills the tree (ZCH-007); verify still runs as the manager |
 | OS isolation | none (README: "guard rail, not a sandbox") | None | None. Not in scope of this phase; the only way to contain code executed by verify |
 | Credential isolation | per-account `--gemini_dir`, Linux private D-Bus session, SSH-hint file storage on Windows/macOS, state dir outside the repo, 0600 JSON | Isolates worker accounts from each other; depends on version-specific `agy` behaviour | Unchanged; verified against a real `agy` version by ZCH-010 |
+
+**Git metadata (ZCH-011).** Its threat model is §11.1: the repository state at dispatch start is trusted; the worker and verify are not; processes they leave running in the background can still act after a check (time-of-check/time-of-use), which zc narrows but does not close; global/system git config and anything outside the work tree and git dirs are outside the boundary (§11.8). Metadata integrity checks are detection and repair, not containment.
 
 **Honest statement after hardening.** zc guarantees that no change a worker or a verify command makes *inside the repository* (including `.zc/`, HEAD and the branch) can reach `OK` without passing the scope and integrity checks, and that anything caught is saved and, where safe, undone. zc does not guarantee anything about effects outside the repository: code executed by verify runs as the manager and can read the manager's files, environment and network. Running untrusted repositories or untrusted ECC content requires a disposable user, container or machine. Post-verification checks are detection and repair, not sandboxing.
 
@@ -306,7 +501,7 @@ Six layers, from weakest to strongest. zc currently implements the first three f
 
 ## H. Implementation constraints
 
-- **CLI.** No command removed or renamed; flags keep their meaning. Additive only: new result fields (`phase`, `verifyChanged`, `preVerifyState`, `stdoutTruncated`, `cooldownSource`, `signal`), new status `INTERRUPTED` (exit 3), richer error text, new `doctor` checks.
+- **CLI.** No command removed or renamed; flags keep their meaning. Additive only: new result fields (`phase`, `verifyChanged`, `preVerifyState`, `stdoutTruncated`, `cooldownSource`, `signal`, `gitMeta`, `gitMetaUnrestored`, `gitLayout`, `revealedAfterRollback`, `gitMetaAcknowledged`), new status `INTERRUPTED` (exit 3), new command `zc ack <runId>` (ZCH-011), richer error text, new `doctor` checks. ZCH-011 also changes scope semantics for `.gitignore`/`.gitattributes` (exact-path allowance) and makes zc's own git calls ignore inherited `GIT_*` variables; both go in the CHANGELOG under **Changed**.
 - **Configuration.** `.zc/config.json` written by older `zc init` must load unchanged. New keys (`defaults.maxCooldownMinutes`, `worker.envPassthrough`) have defaults in `DEFAULTS` and are validated only when present. `cmdInit` output need not change.
 - **Account semantics.** `needs-login`/`ready`/`blocked`, sticky selection, LRU fallback, `reset`/`remove` behave as today. Lease (ZCH-009) is advisory and self-expiring. `accounts.json` gains optional fields only; older files load.
 - **Worker protocol.** stream-json on stdin/stdout, `--gemini_dir`, `--new-project`, permission flags: unchanged. `parseAgyOutput` keeps its export and semantics.
@@ -321,7 +516,7 @@ Six layers, from weakest to strongest. zc currently implements the first three f
 
 The hardening phase is complete when all of the following hold:
 
-1. ZCH-001, ZCH-002, ZCH-003 (P0) merged; ZCH-004 to ZCH-008 and ZCH-010 (P1) merged; ZCH-009 (P2) merged or explicitly deferred with the ZCH-010 evidence that justifies it.
+1. ZCH-001, ZCH-011, ZCH-002, ZCH-003 (P0) merged; ZCH-004 to ZCH-008 and ZCH-010 (P1) merged; ZCH-009 (P2) merged or explicitly deferred with the ZCH-010 evidence that justifies it.
 2. Every new regression test listed in section F exists and passes on the CI matrix; no test writes inside the repository.
 3. All pre-existing tests pass unchanged except where a task explicitly lists an adjusted signature (ZCH-008's `agyEnv`).
 4. The staged-change tests (`staging a worker file counts as a change…`, `repair also refuses when you staged…`) and the content-verified rollback tests pass unchanged.
@@ -338,18 +533,19 @@ One task per dispatch, `npm test` + `npm run check` as verify commands, `zc-revi
 
 | Step | Task | Depends on | Independent of |
 |---|---|---|---|
-| 1 | ZCH-001 post-verify re-check (P0) | — | all; **do first**, with manual `.zc/` and `git log` inspection before commit |
-| 2 | ZCH-002 bounded cooldowns (P0) | — | all |
-| 3 | ZCH-003 honest docs (P0) | ZCH-001 | code tasks |
-| 4 | ZCH-004 lock takeover (P1) | — | ZCH-002, 006, 007, 008 |
-| 5 | ZCH-005 accounts lock (P1) | ZCH-004 | ZCH-006, 007, 008 |
-| 6 | ZCH-006 stream-parsed result (P1) | — | ZCH-004, 005, 008 (touches `proc.mjs`: run before 007) |
-| 7 | ZCH-007 signal handling (P1) | ZCH-006 merged (shared `run()` edits) | ZCH-004, 005, 008 |
-| 8 | ZCH-008 env allowlist (P1) | — | ZCH-004, 005 (touches `agy.mjs`: run after 006) |
-| 9 | ZCH-010 real agy verification (P1, manual) | ZCH-006, ZCH-008 | — |
-| 10 | ZCH-009 account lease (P2) | ZCH-005, ZCH-010 findings | — |
+| 1 | ZCH-001 post-verify re-check (P0) | — | **done** (`63bc634`) |
+| 2 | ZCH-011 git metadata integrity (P0), as steps 011-A → 011-E, each reviewed and committed before the next | ZCH-001 | ZCH-004, 008 in logic; shares `dispatch.mjs` with 002, 005, 006, 007, `gitx.mjs` with nothing else, `cli.mjs` with 004 and 008; manual baseline comparison before each commit |
+| 3 | ZCH-002 bounded cooldowns (P0) | — | all |
+| 4 | ZCH-003 honest docs (P0) | ZCH-001, ZCH-011 | code tasks |
+| 5 | ZCH-004 lock takeover (P1) | — | ZCH-002, 006, 007, 008 |
+| 6 | ZCH-005 accounts lock (P1) | ZCH-004 | ZCH-006, 007, 008 |
+| 7 | ZCH-006 stream-parsed result (P1) | — | ZCH-004, 005, 008 (touches `proc.mjs`: run before 007) |
+| 8 | ZCH-007 signal handling (P1) | ZCH-006 merged (shared `run()` edits) | ZCH-004, 005, 008 |
+| 9 | ZCH-008 env allowlist (P1) | — | ZCH-004, 005 (touches `agy.mjs`: run after 006) |
+| 10 | ZCH-010 real agy verification (P1, manual) | ZCH-006, ZCH-008 | — |
+| 11 | ZCH-009 account lease (P2) | ZCH-005, ZCH-010 findings | — |
 
-Tasks 2, 4, 6 and 8 touch disjoint files and could be dispatched in any order relative to each other; the table gives the order that keeps every file touched by at most one in-flight task. Tasks 1, 2, 5, 6 and 7 all edit `src/dispatch.mjs` and must be strictly sequential.
+ZCH-011 goes before ZCH-002 because it closes a reproduced code-execution path and because ZCH-003 must describe it. Tasks ZCH-002, ZCH-004, ZCH-006 and ZCH-008 touch disjoint files and could be dispatched in any order relative to each other; the table gives the order that keeps every file touched by at most one in-flight task. ZCH-001, ZCH-011, ZCH-002, ZCH-005, ZCH-006 and ZCH-007 all edit `src/dispatch.mjs` and must be strictly sequential.
 
 ---
 
