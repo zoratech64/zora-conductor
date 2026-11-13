@@ -267,6 +267,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           G.savePartial(root, join(runDir, 'rejected'), entries);
           const rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
           return finish('SCOPE_VIOLATION', EXIT.FAILED, {
+            phase: 'worker',
             outOfScope: scope.outOfScope,
             forbidden: [...scope.forbidden, ...zcPaths],
             rolledBack,
@@ -278,6 +279,64 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         const vStarted = Date.now();
         result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
         result.verifyDurationMs = Date.now() - vStarted;
+
+        let verifyZc;
+        try {
+          verifyZc = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-verify-${n}`) });
+        } catch (error) {
+          attempt.outcome = 'zc-not-checked';
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            account: account.id,
+            phase: 'verify',
+            nextAction: `after verify, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
+          });
+        }
+        if (verifyZc.length) attempt.zcViolationsVerify = verifyZc;
+        const verifyUnrestored = verifyZc.filter((v) => !v.restored);
+        if (verifyUnrestored.length) {
+          attempt.outcome = 'zc-not-restored';
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            account: account.id,
+            phase: 'verify',
+            forbidden: verifyUnrestored.map((v) => v.path),
+            nextAction: `a verify command changed .zc/ files that could not be restored: ${verifyUnrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-verify-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
+          });
+        }
+
+        if (G.head(root) !== head0 || G.branch(root) !== branch0) {
+          attempt.outcome = 'moved-head';
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            account: account.id,
+            phase: 'verify',
+            nextAction: 'a verify command moved HEAD or switched branches. Nothing was rolled back automatically; inspect with `git reflog`.'
+          });
+        }
+
+        const postEntries = G.statusEntries(root);
+        const verifyChanged = G.changedPaths(postEntries).filter((p) => !changed.includes(p));
+        const vScope = partitionByScope(verifyChanged, allowed, config.forbidden);
+        const vZcPaths = verifyZc.map((v) => v.path);
+
+        if (vScope.forbidden.length || vScope.outOfScope.length || vZcPaths.length) {
+          G.savePartial(root, join(runDir, 'rejected-verify'), postEntries);
+          const rolledBack = resetAllowed && G.rollbackPaths(root, postEntries, G.dirtyState(root)).conflicts.length === 0;
+          return finish('SCOPE_VIOLATION', EXIT.FAILED, {
+            phase: 'verify',
+            verifyChanged,
+            outOfScope: vScope.outOfScope,
+            forbidden: [...vScope.forbidden, ...vZcPaths],
+            rolledBack,
+            nextAction: rolledBack
+              ? 'a verify command changed files outside the allowed paths (or .zc/); the whole result was saved to the run folder and rolled back. If your build or tests legitimately write these files, add them to `allowed` or .gitignore.'
+              : 'a verify command changed files outside the allowed paths (or .zc/); the tree was left as-is. Review with `git status`, then `zc reject`.'
+          });
+        }
+
+        if (verifyChanged.length) {
+          result.verifyChanged = verifyChanged;
+          result.changed = [...new Set([...changed, ...verifyChanged])].sort();
+        }
+
         if (result.verify.some((v) => !v.ok)) {
           return finish('VERIFY_FAILED', EXIT.FAILED, {
             nextAction: 'the changes stay in the working tree. Read the failing tail, then send a fix with `zc dispatch --repair <runId>` or discard with `zc reject`.'
@@ -380,7 +439,7 @@ export function rejectRun({ root, runId, force = false }) {
 }
 
 export function formatResult(r) {
-  const lines = [`zc: run ${r.runId} -> ${r.status} (exit ${r.exitCode})`];
+  const lines = [`zc: run ${r.runId} -> ${r.status}${r.phase === 'verify' ? ' during verify' : ''} (exit ${r.exitCode})`];
   if (r.taskId) lines.push(`task: ${r.taskId}${r.account ? `   account: ${r.account}` : ''}`);
   if (r.attempts?.length) {
     lines.push(`attempts: ${r.attempts.map((a) => `${a.account} ${a.outcome ?? '?'}${a.kind ? `(${a.kind})` : ''}`).join(' -> ')}`);

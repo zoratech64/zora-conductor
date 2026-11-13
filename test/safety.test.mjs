@@ -359,3 +359,77 @@ test('dispatch: a worker that makes .zc/ unreadable ends as NEEDS_HUMAN, its wor
     chmodSync(join(dir, '.zc/sub'), 0o755);
   }
 });
+
+test('post-verify: verify writes outside allowed paths -> SCOPE_VIOLATION', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').mkdirSync('other', { recursive: true }); require('fs').writeFileSync('other/x.txt', 'x');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'SCOPE_VIOLATION');
+  assert.equal(r.phase, 'verify');
+  assert.deepEqual(r.verifyChanged, ['other/x.txt']);
+  assert.deepEqual(r.outOfScope, ['other/x.txt']);
+  assert.equal(r.rolledBack, true);
+  assert.ok(!existsSync(join(dir, 'other/x.txt')));
+  assert.ok(existsSync(join(r.runDir, 'rejected-verify', 'untracked', 'other', 'x.txt')));
+  assert.equal(statusEntries(dir).length, 0);
+});
+
+test('post-verify: verify overwrites .zc/config.json -> SCOPE_VIOLATION and restored', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const original = readFileSync(join(dir, '.zc/config.json'), 'utf8');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('.zc/config.json', '{\"hacked\":true}');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'SCOPE_VIOLATION');
+  assert.equal(r.phase, 'verify');
+  assert.ok(r.forbidden.includes('.zc/config.json'));
+  assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8'), original);
+  assert.ok(existsSync(join(r.runDir, 'zc-violations-verify-1', '.zc', 'config.json')));
+});
+
+test('post-verify: verify moves HEAD -> NEEDS_HUMAN (exitCode 3)', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "const { execFileSync } = require('child_process'); execFileSync('git', ['add', '-A']); execFileSync('git', ['commit', '-q', '-m', 'v']);";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'NEEDS_HUMAN');
+  assert.equal(r.exitCode, 3);
+  assert.match(r.nextAction, /verify/);
+});
+
+test('post-verify: verify writes in allowed paths -> OK and recorded in changed', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('src/gen.txt', 'gen');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  assert.deepEqual(r.verifyChanged, ['src/gen.txt']);
+  assert.deepEqual(r.changed, ['src/a.txt', 'src/gen.txt']);
+});
+
+test('post-verify: verify overwrites .zc/config.json and exits 1 -> SCOPE_VIOLATION not VERIFY_FAILED', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const original = readFileSync(join(dir, '.zc/config.json'), 'utf8');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('.zc/config.json', '{\"hacked\":true}'); process.exit(1);";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'SCOPE_VIOLATION');
+  assert.notEqual(r.status, 'VERIFY_FAILED');
+  assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8'), original);
+});

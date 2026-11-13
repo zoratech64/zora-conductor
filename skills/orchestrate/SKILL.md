@@ -60,7 +60,7 @@ You are the lead. You plan, decide, verify, and integrate. Workers write the cod
 | Status (exit 1) | Meaning | Do this |
 |---|---|---|
 | `VERIFY_FAILED` | Changes kept in the tree; a gate failed | Repair with the failing tail quoted |
-| `SCOPE_VIOLATION` | Worker touched files outside `allowed` (already rolled back) | Tighten the task, or widen `allowed` on purpose |
+| `SCOPE_VIOLATION` | Worker, or a verify command, touched files outside `allowed` or `.zc/` (already rolled back; `phase` says which) | Tighten the task, or widen `allowed` on purpose |
 | `NO_CHANGES` | Worker claimed success but changed nothing | Rewrite the task more concretely |
 | `TIMEOUT` | Ran past its time limit | Split the task smaller |
 | `DENIED` | Worker needed a permission it does not have | Rephrase for file edits only, or ask the user to allow `worker.permissions: "all"` |
