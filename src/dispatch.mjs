@@ -4,6 +4,7 @@ import * as accounts from './accounts.mjs';
 import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
 import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
+import { gitLayout } from './gitmeta.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
 import { attemptMetrics } from './metrics.mjs';
@@ -97,6 +98,17 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   }
 
   try {
+    let layout;
+    try {
+      layout = gitLayout(root);
+    } catch (error) {
+      return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+        nextAction: `no worker was started: zc could not resolve a trustworthy git directory (${error.message}).`
+      });
+    }
+    G.pinLayout(root, layout);
+    result.gitLayout = layout;
+
     const head0 = G.head(root);
     if (!head0) return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: 'the repository has no commits yet; make an initial commit first.' });
     const branch0 = G.branch(root);
@@ -405,6 +417,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       nextAction: `gave up after ${config.defaults.maxAttempts} worker attempts; see the attempts list and the run folder.`
     });
   } finally {
+    G.unpinLayout(root);
     release();
   }
 }

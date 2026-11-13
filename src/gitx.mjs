@@ -3,14 +3,58 @@ import {
   copyFileSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
+import { stateRoot } from './paths.mjs';
 import { captureState } from './snapshot.mjs';
+
+export function inertTimeoutMs() {
+  const envVal = Number(process.env.ZC_GIT_INERT_TIMEOUT_MS);
+  return Number.isInteger(envVal) && envVal > 0 ? envVal : 60000;
+}
+
+export const noHooksDir = () => join(stateRoot(), 'no-hooks');
+
+function prepareNoHooksDir() {
+  const dir = noHooksDir();
+  try {
+    mkdirSync(dir, { recursive: true });
+    if (readdirSync(dir).length > 0) {
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+    }
+    if (readdirSync(dir).length > 0) {
+      throw new Error(`hooks directory is not empty: ${dir}`);
+    }
+  } catch (error) {
+    if (error.message?.includes(dir)) throw error;
+    throw new Error(`cannot create or empty hooks directory "${dir}": ${error.message}`);
+  }
+  return dir;
+}
+
+const pinnedLayouts = new Map();
+
+function layoutKey(root) {
+  const full = resolve(root);
+  return process.platform === 'win32' ? full.toLowerCase() : full;
+}
+
+export function pinLayout(root, layout) {
+  pinnedLayouts.set(layoutKey(root), layout);
+}
+
+export function unpinLayout(root) {
+  pinnedLayouts.delete(layoutKey(root));
+}
 
 /** Fingerprints of every currently changed path (never `.zc/`). */
 /** Index entry (mode, blob, stage) of each path, or '-' when it is not in the index. */
 function indexState(root, paths) {
   const out = Object.fromEntries(paths.map((p) => [p, '-']));
   for (let i = 0; i < paths.length; i += 100) {
-    const raw = git(root, ['ls-files', '-s', '-z', '--', ...paths.slice(i, i + 100)], { allowFail: true }).stdout ?? '';
+    const raw = git(root, ['ls-files', '-s', '-z', '--', ...paths.slice(i, i + 100)], {
+      allowFail: true,
+      timeoutMs: inertTimeoutMs()
+    }).stdout ?? '';
     for (const row of raw.split('\0').filter(Boolean)) {
       const m = /^(\d+) ([0-9a-f]+) (\d)\t(.*)$/s.exec(row);
       if (m) out[m[4]] = out[m[4]] === '-' ? `${m[1]}:${m[2]}:${m[3]}` : `${out[m[4]]},${m[1]}:${m[2]}:${m[3]}`;
@@ -32,10 +76,40 @@ export function pathStates(root, paths) {
 
 export const dirtyState = (root) => pathStates(root, changedPaths(statusEntries(root)));
 
-export function git(root, args, { allowFail = false } = {}) {
-  const result = spawnSync('git', ['-c', 'core.quotepath=off', ...args], {
-    cwd: root, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true
+export function git(root, args, { allowFail = false, timeoutMs = 0 } = {}) {
+  prepareNoHooksDir();
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!/^GIT_/i.test(key)) {
+      env[key] = value;
+    }
+  }
+  const layout = pinnedLayouts.get(layoutKey(root));
+  if (layout) {
+    env.GIT_DIR = layout.gitDir;
+    env.GIT_COMMON_DIR = layout.commonDir;
+    env.GIT_WORK_TREE = layout.workTree;
+  }
+  const argv = [
+    '-c', 'core.quotepath=off',
+    '-c', 'core.fsmonitor=false',
+    '-c', `core.hooksPath=${noHooksDir()}`,
+    ...args
+  ];
+  const result = spawnSync('git', argv, {
+    cwd: root,
+    encoding: 'utf8',
+    env,
+    maxBuffer: 128 * 1024 * 1024,
+    windowsHide: true,
+    timeout: timeoutMs || undefined
   });
+  if (result.error?.code === 'ETIMEDOUT') {
+    const subcmd = args.find((a) => !a.startsWith('-')) ?? args[0] ?? 'command';
+    const err = new Error(`git ${subcmd} timed out after ${timeoutMs}ms`);
+    err.code = 'ZC_GIT_TIMEOUT';
+    throw err;
+  }
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFail) {
     throw new Error(`git ${args.join(' ')} failed: ${(result.stderr || '').trim()}`);
@@ -44,18 +118,24 @@ export function git(root, args, { allowFail = false } = {}) {
 }
 
 export function toplevel(cwd) {
-  const result = git(cwd, ['rev-parse', '--show-toplevel'], { allowFail: true });
+  const result = git(cwd, ['rev-parse', '--show-toplevel'], { allowFail: true, timeoutMs: inertTimeoutMs() });
   return result.status === 0 ? resolve(result.stdout.trim()) : null;
 }
 
 export function head(root) {
-  const result = git(root, ['rev-parse', '--verify', 'HEAD'], { allowFail: true });
+  const result = git(root, ['rev-parse', '--verify', 'HEAD'], { allowFail: true, timeoutMs: inertTimeoutMs() });
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
 export function branch(root) {
-  const result = git(root, ['symbolic-ref', '--short', '-q', 'HEAD'], { allowFail: true });
+  const result = git(root, ['symbolic-ref', '--short', '-q', 'HEAD'], { allowFail: true, timeoutMs: inertTimeoutMs() });
   return result.status === 0 ? result.stdout.trim() : '(detached)';
+}
+
+export function configList(root) {
+  return git(root, ['config', '--list', '--show-origin', '--show-scope', '--includes', '-z'], {
+    timeoutMs: inertTimeoutMs()
+  });
 }
 
 const isZc = (path) => path === '.zc' || path.startsWith('.zc/');
@@ -83,7 +163,7 @@ export const changedPaths = (entries) => [...new Set(entries.map((e) => e.path))
 /** Keep a copy of a worker's uncommitted work before anything is rolled back. */
 export function savePartial(root, dir, entries) {
   mkdirSync(dir, { recursive: true });
-  const patch = git(root, ['diff', 'HEAD', '--binary', '--', '.', ':(exclude).zc'], { allowFail: true });
+  const patch = git(root, ['diff', 'HEAD', '--binary', '--no-ext-diff', '--no-textconv', '--', '.', ':(exclude).zc'], { allowFail: true });
   writeFileSync(join(dir, 'tracked.patch'), patch.stdout ?? '');
   const saved = [];
   for (const entry of entries.filter((e) => e.xy === '??')) {
@@ -112,7 +192,8 @@ function removeUntracked(root, relPath) {
   }
 }
 
-const inHead = (root, path) => git(root, ['cat-file', '-e', `HEAD:${path}`], { allowFail: true }).status === 0;
+const inHead = (root, path) =>
+  git(root, ['cat-file', '-e', `HEAD:${path}`], { allowFail: true, timeoutMs: inertTimeoutMs() }).status === 0;
 
 /**
  * Roll back only the given dirty paths, and only those whose content is exactly what `expected` records
