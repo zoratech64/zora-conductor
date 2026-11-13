@@ -12,6 +12,7 @@ import { run } from './proc.mjs';
 import { loadEccRules } from './prompt.mjs';
 import { DEFAULT_ASSET_BYTES, buildIndex, eccRoot, installFrom, installFromGit, loadAssets, parseSpec, readInstalled, searchIndex, validateCatalog } from './ecc.mjs';
 import { parseTask, splitArgv } from './task.mjs';
+import { TASK_TEMPLATE } from './template.mjs';
 
 const HELP = `zc — Claude manages, Gemini workers implement (one at a time, in place)
 
@@ -65,10 +66,7 @@ function cmdInit(root) {
   mkdirSync(join(root, '.zc', 'tasks'), { recursive: true });
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
   writeFileSync(join(root, '.zc', 'progress.md'), '# Progress log\n\nOne line per accepted task: date, task id, run id, commit.\n');
-  writeFileSync(join(root, '.zc', 'tasks', 'TEMPLATE.md'), [
-    '---', 'id: T-001', 'title: Short name', 'allowed:', '  - src/example/', 'verify:', '  - npm test', 'minutes: 30', '# ecc:', '#   - skill:dart-flutter-patterns', '#   - agent:flutter-reviewer', '---',
-    'Objective: one sentence.', '', 'Files to create or change: ...', '', 'Acceptance tests: ...', '', 'Constraints: ...', ''
-  ].join('\n'));
+  writeFileSync(join(root, '.zc', 'tasks', 'TEMPLATE.md'), TASK_TEMPLATE);
   console.log(`zc: initialised ${join(root, '.zc')} (detected: ${detected.stack})`);
   console.log('next: review .zc/config.json (verify commands, ecc.path), commit .zc/, then `zc account add <id>`.');
 }

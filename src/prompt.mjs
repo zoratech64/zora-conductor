@@ -5,7 +5,10 @@ import { eccRoot, formatAssets, loadAssets, readAsset } from './ecc.mjs';
 /** ECC rule files that describe Claude Code hooks and sub-agents; they mean nothing to a Gemini worker. */
 const CLAUDE_ONLY = new Set(['hooks.md', 'agents.md']);
 
-export const DEFAULT_PREFIX = `You are a worker. A manager assigns you one bounded task and reviews everything you do.
+/** Older built-in prefixes that `zc init` once copied into projects; they follow the current default. */
+const NO_COMMANDS_LINE = /^- You cannot run shell commands:.*\n/m;
+
+const PREVIOUS_PREFIX = `You are a worker. A manager assigns you one bounded task and reviews everything you do.
 - Do exactly what the task says. No unrequested improvements, renames, or refactors.
 - Edit only the allowed paths listed below. Anything else you change will be rejected and rolled back.
 - You cannot run shell commands: no ls, cat, grep, find, git, flutter, dart, npm or anything else. Use only your file read, list, search and edit tools. A single refused command ends the whole task with nothing done. The manager runs all builds and tests after you finish.
@@ -16,9 +19,19 @@ export const DEFAULT_PREFIX = `You are a worker. A manager assigns you one bound
 - Keep files small and modular; match the surrounding style; add or update tests when the task asks.
 - Finish with a short report: files changed, what you verified, and anything you skipped or could not verify.`;
 
-/** Older built-in prefixes that `zc init` once copied into projects; they follow the current default. */
-const NO_COMMANDS_LINE = /^- You cannot run shell commands:.*\n/m;
-const LEGACY_PREFIXES = [DEFAULT_PREFIX.replace(NO_COMMANDS_LINE, '').trim()];
+const CONTRACT_RULES = `## Working from the manager's contract
+- The task's decisions (approach, names, files, behavior) were made by the manager and are authoritative. Do not redesign or reopen them.
+- Read every file you will edit before editing it. Beyond those, read only files the task names and the direct imports or callers you need in order to edit safely. Do not explore the rest of the repository.
+- If the task contradicts the code (a missing symbol, a wrong signature, an impossible instruction) or a file you need is not allowed, do not guess and do not widen scope. Do the parts that are sound and report the contradiction with file and line evidence.
+- Never change the architecture or touch files outside the allowed paths on your own.`;
+
+export const DEFAULT_PREFIX = `${PREVIOUS_PREFIX}\n\n${CONTRACT_RULES}`;
+
+const LEGACY_PREFIXES = [
+  PREVIOUS_PREFIX.trim(),
+  PREVIOUS_PREFIX.replace(NO_COMMANDS_LINE, '').trim(),
+  DEFAULT_PREFIX.replace(NO_COMMANDS_LINE, '').trim()
+];
 
 /**
  * Project-specific standing instructions (.zc/worker-prefix.md), falling back to the built-in prefix.

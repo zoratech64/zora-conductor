@@ -63,7 +63,7 @@ zc account add|login|check|list|reset|remove
 
 Dispatch exit codes: `0` done and verified · `1` failed / rejected / verify failed · `2` every account is cooling down (`retryAfter` in the result) · `3` needs a human.
 
-A task is a Markdown file with front matter (`ecc:` gives the worker any ECC skill, agent, command or rule pack, pasted into its prompt):
+A task is a Markdown file with front matter (`ecc:` gives the worker any ECC skill, agent, command or rule pack, pasted into its prompt). The manager writes the decisions and the worker implements them:
 
 ```markdown
 ---
@@ -80,7 +80,15 @@ ecc:
   - skill:nestjs-patterns
   - agent:typescript-reviewer
 ---
-Add POST /auth/reset ... (objective, files, acceptance tests, constraints)
+Objective: add a password reset endpoint to the auth module.
+
+Decisions: generate crypto tokens with 1-hour expiry, store hashes with bcrypt.
+
+Per file:
+- src/auth/reset.ts: endpoint handler and token verification logic.
+- test/auth/reset.test.ts: unit tests for token generation, expiry and reset flow.
+
+Done when: POST /auth/reset returns 200 with valid email, tests pass.
 ```
 
 ## Safety model

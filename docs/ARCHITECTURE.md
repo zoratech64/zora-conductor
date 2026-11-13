@@ -25,7 +25,7 @@ loop       pick account (sticky, else least recently used among ready + not cool
 none ready  NO_CAPACITY (exit 2, retryAfter) or NEEDS_HUMAN (nothing usable at all)
 ```
 
-Every run writes `result.json`, each attempt's prompt and raw event stream, and any saved partial work to `<state>/projects/<project>/runs/<runId>/`.
+Every run writes `result.json`, each attempt's prompt and raw event stream, and any saved partial work to `<state>/projects/<project>/runs/<runId>/`. It records `attempts[].metrics` and `verifyDurationMs`, with missing measurements set to `null`, never invented.
 
 ## Invariants
 

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -33,6 +33,7 @@ test('quota on one account: partial work saved and rolled back, next account fin
   assert.equal(r.status, 'OK');
   assert.deepEqual(r.attempts.map((a) => [a.account, a.kind ?? 'ok']), [['g1', 'quota'], ['g2', 'ok']]);
   assert.deepEqual(r.changed, ['src/b.txt']); // g1's half-done file did not leak into g2's result
+  assert.ok(r.attempts[0].metrics?.promptBytes > 0);
   assert.ok(existsSync(join(r.runDir, 'partial-1', 'untracked', 'src', 'partial.txt')));
   const held = accounts.getAccount('g1');
   assert.ok(held.cooldownUntil > Date.now() + 20 * 60_000, 'cooldown honours the 30 minute hint');
@@ -333,4 +334,29 @@ test('a worker that keeps trying commands ends as DENIED with the refused comman
   assert.deepEqual(r.denied, ['run_command: ls -la']);
   assert.match(r.nextAction, /ls -la/);
   assert.ok(clean(dir));
+});
+
+test('metrics: records attempt metrics and verification duration', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'hi' } });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.status, 'OK');
+  const m = r.attempts[0].metrics;
+  assert.equal(m.turns, 2);
+  assert.deepEqual(m.usage, { input_tokens: 10, output_tokens: 5 });
+  assert.equal(m.tools.total, 1);
+  assert.equal(m.fileOps.write, 1);
+  assert.equal(m.fileOps.read, 0);
+  const promptStat = statSync(join(r.runDir, 'attempt-1.prompt.txt'));
+  assert.equal(m.promptBytes, promptStat.size);
+  assert.equal(typeof r.attempts[0].durationMs, 'number');
+  assert.ok(r.verify.length > 0);
+  for (let i = 0; i < r.verify.length; i++) {
+    assert.ok(Number.isInteger(r.verify[i].durationMs) && r.verify[i].durationMs >= 0);
+  }
+  assert.equal(typeof r.verifyDurationMs, 'number');
+
+  const persisted = JSON.parse(readFileSync(join(r.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual(persisted.attempts[0].metrics, m);
 });
