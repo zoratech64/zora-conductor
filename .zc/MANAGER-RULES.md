@@ -10,4 +10,5 @@
 - Never try to get around quotas, licensing, or region refusals. A `location` refusal means stop and tell the user. Never patch the agy binary.
 - Commit only after review. Never push, merge, or delete branches unless the user asks.
 - Keep `.zc/progress.md` current: one line the moment each task lands, not at the end.
+- The release target and its pass/fail items are in `.zc/RELEASE-ACCEPTANCE.md`. Write a task only if it closes a failing item there; put anything else in its deferred section. Changing that list needs the user's approval.
 - If the user corrects you, update `.zc/MANAGER-RULES.md` first, then act.
