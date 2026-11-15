@@ -8,6 +8,10 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+### Fixed
+
+- A task's `verify:` no longer replaces the project's verify commands; it adds to them (marked **Breaking** for task files that relied on replacing).
+
 ### Changed
 
 - Manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted.

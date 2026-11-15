@@ -37,9 +37,27 @@ export function listRuns(root, limit = 10) {
 
 export const getRun = (root, id) => readJson(join(runsDir(root), id, 'result.json'), null);
 
+/**
+ * Combine project and task verification commands. Project commands always run first in order;
+ * task commands are appended unless their argv string is already present (deduping exact duplicates).
+ * Returns a new array without mutating inputs.
+ */
+export function effectiveVerify(projectVerify = [], taskVerify = []) {
+  const result = [...(projectVerify ?? [])];
+  const seen = new Set(result.map((argv) => argv.join(' ')));
+  for (const cmd of taskVerify ?? []) {
+    const key = cmd.join(' ');
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(cmd);
+    }
+  }
+  return result;
+}
+
 function taskPrompt({ root, task, config, resumeNote }) {
   const allowed = task.meta.allowed.length ? task.meta.allowed : config.defaults.allowed;
-  const verify = task.meta.verify.length ? task.meta.verify : config.verify;
+  const verify = effectiveVerify(config.verify, task.meta.verify);
   const { text: eccRulesText, included, excluded, omitted } = selectEccRules(config);
   return {
     allowed,
@@ -79,6 +97,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     outOfScope: [], forbidden: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
   };
   result.eccRules = eccRules;
+  result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
   const finish = (status, exitCode, extra = {}) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
     try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }

@@ -94,7 +94,7 @@ test('verify failure keeps the work; dirty tree needs --repair; repair sees prio
   failing.meta.verify = [FAIL];
   const first = await dispatch({ root: dir, task: failing, config });
   assert.equal(first.status, 'VERIFY_FAILED');
-  assert.match(first.verify[0].tail, /boom/);
+  assert.match(first.verify.at(-1).tail, /boom/);
   assert.equal(readFileSync(join(dir, 'src/a.txt'), 'utf8'), 'v1');
 
   const blocked = await dispatch({ root: dir, task: scoped(), config });
