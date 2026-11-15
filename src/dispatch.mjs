@@ -7,7 +7,7 @@ import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
 import { attemptMetrics } from './metrics.mjs';
-import { buildPrompt, loadEccAssets, loadEccRules, loadPrefix } from './prompt.mjs';
+import { buildPrompt, loadEccAssets, loadPrefix, selectEccRules } from './prompt.mjs';
 import { parseMinutes } from './limits.mjs';
 import { partitionByScope } from './scope.mjs';
 import { restoreZc, sameState, snapshotZc } from './snapshot.mjs';
@@ -40,12 +40,14 @@ export const getRun = (root, id) => readJson(join(runsDir(root), id, 'result.jso
 function taskPrompt({ root, task, config, resumeNote }) {
   const allowed = task.meta.allowed.length ? task.meta.allowed : config.defaults.allowed;
   const verify = task.meta.verify.length ? task.meta.verify : config.verify;
+  const { text: eccRulesText, included, excluded, omitted } = selectEccRules(config);
   return {
     allowed,
     verify,
+    eccRules: { included, excluded, omitted },
     prompt: buildPrompt({
       prefix: loadPrefix(root, config),
-      eccRules: loadEccRules(config),
+      eccRules: eccRulesText,
       eccAssets: loadEccAssets(config, task),
       task,
       allowed,
@@ -63,7 +65,7 @@ function taskPrompt({ root, task, config, resumeNote }) {
  * git itself and verification is run here, not reported by the worker.
  */
 export async function dispatch({ root, task, config, repairOf = null, dryRun = false, log = () => {} }) {
-  const { allowed, verify: verifyCmds, prompt: dryPrompt } = taskPrompt({
+  const { allowed, verify: verifyCmds, prompt: dryPrompt, eccRules } = taskPrompt({
     root, task, config, resumeNote: repairOf ? REPAIR_NOTE : ''
   });
   if (dryRun) return { status: 'DRY_RUN', exitCode: 0, taskId: task.meta.id, allowed, prompt: dryPrompt };
@@ -76,6 +78,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     startedAt: new Date().toISOString(), account: null, allowed, attempts: [], changed: [],
     outOfScope: [], forbidden: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
   };
+  result.eccRules = eccRules;
   const finish = (status, exitCode, extra = {}) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
     try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
