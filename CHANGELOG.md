@@ -21,6 +21,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 - Manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted.
 - The default task template (`zc init`) and the manager skill now use the execution contract.
 - The built-in worker prefix gains contract rules (projects with an unmodified copy of an older prefix pick them up automatically; customised prefixes are left alone).
+- manager skill and zc-reviewer now agree: specialist review is risk-based, zc's verify outcome is the gate, and acceptance uses `zc accept` instead of broad staging.
 
 ## [0.2.0-alpha.1] - 2026-11-08
 
