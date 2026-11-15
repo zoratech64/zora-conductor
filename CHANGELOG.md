@@ -2,27 +2,42 @@
 
 All notable changes to zora-conductor are recorded here. Versions follow [Semantic Versioning](https://semver.org/); before 1.0.0 a minor release may contain an approved breaking change, which is always marked **Breaking** here and comes with migration guidance. The release process is in [docs/RELEASING.md](docs/RELEASING.md).
 
-No version below has been published as a git tag or GitHub Release yet. The commit hashes refer to `main` in [zoratech64/zora-conductor](https://github.com/zoratech64/zora-conductor).
+0.2.0-alpha.1 is the first version published as a git tag and GitHub Pre-release; the versions before it were never tagged or released. The commit hashes refer to `main` in [zoratech64/zora-conductor](https://github.com/zoratech64/zora-conductor).
 
 Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the listed commits carry that version. 0.1.1 and 0.1.2 were local development version bumps only. They were never recorded in git, and no commit carries those version numbers. They are listed separately at the end so the history of the code is complete.
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-11-15
+
+Second pre-release, for testing only. It adds `zc accept`, makes project verification mandatory, sends workers leaner prompts with an execution contract, and records run metrics.
+
+### Breaking
+
+- A task's `verify:` no longer replaces the project's `verify` commands from `.zc/config.json`; the project commands always run first and the task's commands are added after them (exact duplicates run once). `result.json` lists the effective commands in `verifyPlan`. **Migration:** a task that used `verify:` to replace or skip a project command must now also pass that command. If a project command should not run for every task, remove it from `verify` in `.zc/config.json` and list it in the `verify:` of the tasks that need it.
+
 ### Added
 
-- `zc accept` stages only the files a verified worker run produced, checking run status, HEAD and recorded contents before staging.
-- `scripts/measure.mjs` gains read-only `runs` to aggregate metrics across recorded runs and `compare` for before/after prompt size comparisons.
-
-### Fixed
-
-- A task's `verify:` no longer replaces the project's verify commands; it adds to them (marked **Breaking** for task files that relied on replacing).
+- `zc accept [<runId>]` stages only the files a verified worker run produced; it never commits. It checks run status, HEAD and the recorded file contents first, and refuses paths outside the task's `allowed`, forbidden paths and paths not recorded as the worker's change (for example files written by verify commands). Staging is all-or-nothing: on any mismatch nothing is staged. It also refuses, staging nothing, when unrelated files are already staged, so the next `git commit` contains only the run's files. It takes the same project lock as `dispatch` and `reject`.
+- `result.json` records per-attempt worker metrics in `attempts[].metrics` (prompt size, turns, usage, tool and file-operation counts) and `verifyDurationMs`. A measurement that is not available is `null`.
+- `scripts/measure.mjs` measures worker prompt sizes, and gains read-only `runs` (metrics aggregated across recorded runs) and `compare` (before/after prompt-size comparison).
 
 ### Changed
 
-- Manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted.
-- The default task template (`zc init`) and the manager skill now use the execution contract.
-- The built-in worker prefix gains contract rules (projects with an unmodified copy of an older prefix pick them up automatically; customised prefixes are left alone).
-- manager skill and zc-reviewer now agree: specialist review is risk-based, zc's verify outcome is the gate, and acceptance uses `zc accept` instead of broad staging.
+- Worker prompts leave out manager-only ECC rule files. Past `ecc.maxChars`, whole rule files are dropped (never cut mid-file), and `result.json` records which rules were included, excluded and omitted in `eccRules`.
+- The default task template (`zc init`) and the manager skill use the execution contract.
+- The built-in worker prefix gains the contract rules. Projects with an unmodified copy of an older prefix pick them up automatically; customised prefixes are left alone.
+- The manager skill and the `zc-reviewer` agent now agree: specialist review is risk-based, zc's verify outcome is the gate, and acceptance uses `zc accept` instead of broad staging.
+
+### Fixed
+
+- Worker accounts on Windows and macOS are isolated: agy there ignores file-based token storage and kept one shared login in the OS credential store, so every account was the same identity. zc now sets local SSH-session hints (`SSH_CLIENT`, `SSH_CONNECTION`; no SSH connection is made) so agy keeps each account's token in its own profile folder. `ZC_ISOLATION=none` turns this off. Linux is unchanged.
+
+### Known limitations
+
+- The Claude plugin does not yet run a project-local CLI.
+- Automatic switching to the next account is still present; its removal is a planned change that is not in this pre-release.
+- Windows and macOS are still untested end to end; the account-isolation fix was checked against agy 1.5.1 only.
 
 ## [0.2.0-alpha.1] - 2026-11-08
 
