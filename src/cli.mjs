@@ -20,7 +20,7 @@ Project (run inside the git repo):
   zc init                                 create .zc/ config for this project
   zc dispatch --task <file> [--json]      run one task on the next ready worker account
   zc dispatch --prompt "<text>" --allow <glob> [--verify "<cmd>"] [--ecc skill:<name>,agent:<name>] [--id <id>]
-  zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result
+  zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result (task declares cause:)
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
   zc accept [<runId>]                     stage only a verified run's files (never commits)
   zc runs                                 recent runs
@@ -169,6 +169,9 @@ async function cmdDispatch(argv) {
   const root = projectRoot(opts);
   const config = loadConfig(root);
   const task = readTask(opts, root);
+  if (opts.repair && !task.meta.cause) {
+    throw new Error('a repair task must declare its cause in front matter: cause: worker|contract|environment|verify (optional causeNote: <one line>)');
+  }
   const result = await dispatch({
     root, task, config, repairOf: opts.repair ?? null, dryRun: Boolean(opts['dry-run']),
     log: (line) => console.error(`zc: ${line}`)

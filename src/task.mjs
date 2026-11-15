@@ -50,6 +50,9 @@ function parseFrontMatter(block) {
 
 const asList = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
 
+/** Repair causes: worker (worker did not follow contract/code wrong), contract (contract wrong/incomplete), environment (tooling/fixtures/accounts/machine), verify (verify command wrong/flaky). */
+export const REPAIR_CAUSES = ['worker', 'contract', 'environment', 'verify'];
+
 export function parseTask(text, { fallbackId = 'task' } = {}) {
   let meta = {};
   let body = text;
@@ -59,6 +62,22 @@ export function parseTask(text, { fallbackId = 'task' } = {}) {
     body = text.slice(match[0].length);
   }
   const id = String(meta.id ?? fallbackId).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 60) || fallbackId;
+  let cause;
+  if (meta.cause !== undefined) {
+    if (Array.isArray(meta.cause)) {
+      throw new Error('task cause must be one of worker, contract, environment, verify');
+    }
+    const normalized = String(meta.cause).trim().toLowerCase();
+    if (!REPAIR_CAUSES.includes(normalized)) {
+      throw new Error('task cause must be one of worker, contract, environment, verify');
+    }
+    cause = normalized;
+  }
+  let causeNote;
+  if (meta.causeNote !== undefined) {
+    const trimmed = String(meta.causeNote).trim().slice(0, 300);
+    causeNote = trimmed.length ? trimmed : undefined;
+  }
   return {
     meta: {
       id,
@@ -67,7 +86,9 @@ export function parseTask(text, { fallbackId = 'task' } = {}) {
       verify: asList(meta.verify).map((line) => splitArgv(String(line))).filter((argv) => argv.length),
       ecc: asList(meta.ecc).map(String),
       minutes: meta.minutes === undefined ? undefined : parseMinutes(meta.minutes, 'task minutes'),
-      model: meta.model ? String(meta.model) : undefined
+      model: meta.model ? String(meta.model) : undefined,
+      cause,
+      causeNote
     },
     body: body.trim()
   };

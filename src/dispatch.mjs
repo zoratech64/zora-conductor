@@ -92,7 +92,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   const runDir = join(runsDir(root), id);
   mkdirSync(runDir, { recursive: true });
   const result = {
-    runId: id, runDir, taskId: task.meta.id, repairOf, status: 'FAILED', exitCode: 1,
+    runId: id, runDir, taskId: task.meta.id, repairOf,
+    repairCause: repairOf ? { kind: task.meta.cause ?? null, note: task.meta.causeNote ?? null } : null,
+    status: 'FAILED', exitCode: 1,
     startedAt: new Date().toISOString(), account: null, allowed, attempts: [], changed: [],
     outOfScope: [], forbidden: [], inherited: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
   };

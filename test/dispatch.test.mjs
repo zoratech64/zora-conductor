@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import * as accounts from '../src/accounts.mjs';
-import { dispatch, rejectRun } from '../src/dispatch.mjs';
+import { main } from '../src/cli.mjs';
+import { dispatch, listRuns, rejectRun } from '../src/dispatch.mjs';
 import { statusEntries } from '../src/gitx.mjs';
 import { FAIL, addFake, fakeEcc, calls, git, lastPrompt, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
 
@@ -197,6 +198,68 @@ test('repair does not inherit files the repaired run\'s verify wrote', async () 
   assert.equal(repair.status, 'SCOPE_VIOLATION');
   assert.deepEqual(repair.outOfScope, ['other/gen.txt']);
   assert.deepEqual(repair.inherited, ['src/a.txt']);
+});
+
+test('repair records repairCause from the task; a non-repair run has null', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+  assert.equal(first.repairCause, null);
+  const firstOnDisk = JSON.parse(readFileSync(join(first.runDir, 'result.json'), 'utf8'));
+  assert.equal(firstOnDisk.repairCause, null);
+
+  setScenario(g1, { mode: 'ok', write: { 'src/a.txt': 'v2' } });
+  const repairTask = task('id: T-repair\ncause: contract\ncauseNote: wrong assertion\nallowed:\n  - src/', 'Fix assertion.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.deepEqual(repair.repairCause, { kind: 'contract', note: 'wrong assertion' });
+  const repairOnDisk = JSON.parse(readFileSync(join(repair.runDir, 'result.json'), 'utf8'));
+  assert.deepEqual(repairOnDisk.repairCause, { kind: 'contract', note: 'wrong assertion' });
+});
+
+test('zc dispatch --repair refuses a task without cause and creates no run', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  const before = listRuns(dir, 100).length;
+  const taskFile = join(dir, 'repair-without-cause.md');
+  writeFileSync(taskFile, '---\nid: T-repair\nallowed:\n  - src/\n---\nFix it.\n');
+
+  const code = await main(['dispatch', '--repair', first.runId, '--task', taskFile, '--project', dir]);
+  assert.equal(code, 3);
+  assert.equal(listRuns(dir, 100).length, before);
+});
+
+test('chained repair: files a middle repair\'s verify wrote are not inherited by the next repair', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const taskA = task('id: T-a\nallowed:\n  - src/', 'Task A.');
+  taskA.meta.verify = [FAIL];
+  const a = await dispatch({ root: dir, task: taskA, config });
+  assert.equal(a.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const taskB = task('id: T-b\nallowed:\n  - test/', 'Task B.');
+  taskB.meta.verify = [[process.execPath, '-e', 'require("fs").mkdirSync("other",{recursive:true});require("fs").writeFileSync("other/x.txt","x");process.exit(1)']];
+  const b = await dispatch({ root: dir, task: taskB, config, repairOf: a.runId });
+  assert.equal(b.status, 'VERIFY_FAILED');
+  assert.deepEqual(b.inherited, ['src/a.txt']);
+
+  setScenario(g1, { mode: 'ok', write: { 'docs/d.txt': 'd' } });
+  const taskC = task('id: T-c\nallowed:\n  - docs/', 'Task C.');
+  const c = await dispatch({ root: dir, task: taskC, config, repairOf: b.runId });
+  assert.equal(c.status, 'SCOPE_VIOLATION');
+  assert.deepEqual(c.outOfScope, ['other/x.txt']);
+  assert.deepEqual(c.inherited, ['src/a.txt', 'test/b.txt']);
 });
 
 test('an inherited path that is forbidden by the current config is still reported', async () => {

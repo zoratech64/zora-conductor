@@ -7,7 +7,7 @@ import { agyRunArgs, isolationMode, launchPlan, parseAgyOutput, parseUsage } fro
 import { parseArgs } from '../src/args.mjs';
 import { classify, parseResetHint } from '../src/classify.mjs';
 import { globToRegExp, isForbidden, matches, partitionByScope } from '../src/scope.mjs';
-import { parseTask, splitArgv } from '../src/task.mjs';
+import { REPAIR_CAUSES, parseTask, splitArgv } from '../src/task.mjs';
 import { attemptMetrics } from '../src/metrics.mjs';
 import { makeHome } from './helpers.mjs';
 
@@ -50,6 +50,28 @@ test('task files: front matter lists, scalars, inline lists', () => {
   assert.equal(t.body, 'Body here');
   assert.deepEqual(parseTask('---\nallowed: [a/, b/]\n---\nx').meta.allowed, ['a/', 'b/']);
   assert.equal(parseTask('no front matter', { fallbackId: 'F' }).meta.id, 'F');
+});
+
+test('task files: repair cause and causeNote', () => {
+  assert.deepEqual(REPAIR_CAUSES, ['worker', 'contract', 'environment', 'verify']);
+  const t1 = parseTask('---\ncause: Contract\ncauseNote: "  fixture leaves .zc untracked "\n---\nbody');
+  assert.equal(t1.meta.cause, 'contract');
+  assert.equal(t1.meta.causeNote, 'fixture leaves .zc untracked');
+
+  const t2 = parseTask('---\nid: T-1\n---\nbody');
+  assert.equal(t2.meta.cause, undefined);
+  assert.equal(t2.meta.causeNote, undefined);
+
+  assert.throws(() => parseTask('---\ncause: typo\n---\nbody'), /task cause must be one of/);
+  assert.throws(() => parseTask('---\ncause:\n---\nbody'), /task cause must be one of/);
+
+  const longNote = 'a'.repeat(400);
+  const t3 = parseTask(`---\ncause: worker\ncauseNote: ${longNote}\n---\nbody`);
+  assert.equal(t3.meta.causeNote.length, 300);
+  assert.equal(t3.meta.causeNote, 'a'.repeat(300));
+
+  const t4 = parseTask('---\ncause: worker\ncauseNote: ""\n---\nbody');
+  assert.equal(t4.meta.causeNote, undefined);
 });
 
 test('classify: each failure kind, and ordinary text is not a failure', () => {
