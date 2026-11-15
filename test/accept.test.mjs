@@ -28,7 +28,7 @@ test('OK run: accepts and stages only recorded paths, leaving unrelated untracke
   assert.match(status, /\?\? notes\.txt/);
 });
 
-test('pre-existing staged change stays staged with same content and unstaged modification stays unstaged', async () => {
+test('pre-existing staged change is refused, leaving index unchanged and unstaged modification unstaged', async () => {
   makeHome();
   const { dir, config } = makeRepo();
   const t = task('id: T-2\nallowed:\n  - src/a.txt');
@@ -39,15 +39,18 @@ test('pre-existing staged change stays staged with same content and unstaged mod
   // Pre-existing staged change made after the run to unrelated tracked file
   writeFileSync(join(dir, 'README.md'), 'manager staged change\n');
   git(dir, 'add', 'README.md');
+  const before = git(dir, 'diff', '--cached', '--name-only');
   const cachedBefore = git(dir, 'diff', '--cached', '--', 'README.md');
 
   // Unrelated unstaged modification
   writeFileSync(join(dir, 'src', 'keep.txt'), 'manager unstaged change\n');
 
-  const res = acceptRun({ root: dir, runId: run.runId, config });
-  assert.deepEqual(res.staged, ['src/a.txt']);
-  assert.deepEqual(res.leftAlone, ['README.md', 'src/keep.txt']);
+  assert.throws(
+    () => acceptRun({ root: dir, runId: run.runId, config }),
+    /unrelated paths are already staged.*README\.md/
+  );
 
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), before);
   const cachedAfter = git(dir, 'diff', '--cached', '--', 'README.md');
   assert.equal(cachedAfter, cachedBefore);
 
@@ -202,7 +205,7 @@ test('staging uses one call: accept of a run with 150 new files stages all 150',
   assert.equal(cached.length, 150);
 });
 
-test('alreadyStaged lists an unrelated file user staged after the run and stays staged with unchanged content', async () => {
+test('accept refuses when unrelated tracked file is already staged and leaves index unchanged', async () => {
   makeHome();
   const { dir, config } = makeRepo();
   const t = task('id: T-12\nallowed:\n  - src/a.txt');
@@ -212,15 +215,16 @@ test('alreadyStaged lists an unrelated file user staged after the run and stays 
 
   writeFileSync(join(dir, 'README.md'), 'user edit to readme\n');
   git(dir, 'add', 'README.md');
-  const cachedBefore = git(dir, 'diff', '--cached', '--', 'README.md');
+  const before = git(dir, 'diff', '--cached', '--name-only');
+  const beforeReadme = git(dir, 'diff', '--cached', '--', 'README.md');
 
-  const res = acceptRun({ root: dir, runId: run.runId, config });
-  assert.deepEqual(res.staged, ['src/a.txt']);
-  assert.deepEqual(res.alreadyStaged, ['README.md']);
-  assert.ok(res.leftAlone.includes('README.md'));
+  assert.throws(
+    () => acceptRun({ root: dir, runId: run.runId, config }),
+    /unrelated paths are already staged.*README\.md/
+  );
 
-  const cachedAfter = git(dir, 'diff', '--cached', '--', 'README.md');
-  assert.equal(cachedAfter, cachedBefore);
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), before);
+  assert.equal(git(dir, 'diff', '--cached', '--', 'README.md'), beforeReadme);
 });
 
 test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints staged', async () => {
@@ -248,7 +252,7 @@ test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints 
   assert.equal(cached, 'src/a.txt');
 });
 
-test('CLI smoke: accept warns when an unrelated file was already staged', async () => {
+test('CLI smoke: accept refuses when an unrelated file was already staged and leaves index unchanged', async () => {
   const home = makeHome();
   const { dir, config } = makeRepo();
   const t = task('id: T-13\nallowed:\n  - src/');
@@ -258,6 +262,7 @@ test('CLI smoke: accept warns when an unrelated file was already staged', async 
 
   writeFileSync(join(dir, 'extra.txt'), 'extra staged\n');
   git(dir, 'add', 'extra.txt');
+  const before = git(dir, 'diff', '--cached', '--name-only');
 
   const binZc = resolve(import.meta.dirname, '..', 'bin', 'zc.mjs');
   const r = spawnSync(process.execPath, [binZc, 'accept', run.runId], {
@@ -265,6 +270,36 @@ test('CLI smoke: accept warns when an unrelated file was already staged', async 
     env: { ...process.env, ZC_HOME: home },
     encoding: 'utf8'
   });
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /warning: already staged and not this run's \(a commit would include them\): extra\.txt/);
+  assert.notEqual(r.status, 0);
+  const output = (r.stdout ?? '') + (r.stderr ?? '');
+  assert.match(output, /extra\.txt/);
+  assert.equal(git(dir, 'diff', '--cached', '--name-only'), before);
+});
+
+test('unrelated unstaged modification and untracked file still let accept succeed and stay untouched', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const t = task('id: T-14\nallowed:\n  - src/a.txt');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'worker output\n' } });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  writeFileSync(join(dir, 'src', 'keep.txt'), 'unstaged change\n');
+  writeFileSync(join(dir, 'notes.txt'), 'untracked file\n');
+
+  const res = acceptRun({ root: dir, runId: run.runId, config });
+  assert.equal(res.runId, run.runId);
+  assert.deepEqual(res.staged, ['src/a.txt']);
+  assert.deepEqual(res.leftAlone, ['notes.txt', 'src/keep.txt']);
+
+  const cached = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort();
+  assert.deepEqual(cached, ['src/a.txt']);
+
+  const unstagedKeep = git(dir, 'diff', '--name-only', '--', 'src/keep.txt').trim();
+  assert.equal(unstagedKeep, 'src/keep.txt');
+  const cachedKeep = git(dir, 'diff', '--cached', '--name-only', '--', 'src/keep.txt').trim();
+  assert.equal(cachedKeep, '');
+
+  const status = git(dir, 'status', '--porcelain');
+  assert.match(status, /\?\? notes\.txt/);
 });

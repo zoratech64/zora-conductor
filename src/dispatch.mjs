@@ -404,8 +404,9 @@ export function rejectRun({ root, runId, force = false }) {
 /**
  * Stage only the files a verified worker run produced: checks that the run succeeded (OK),
  * HEAD has not moved, and all owned files still match the recorded worker state. Leaves
- * unrelated changes alone. Takes the same project lock as dispatch and reject.
- * Returns { runId, staged, leftAlone, alreadyStaged }.
+ * unrelated changes alone; refuses when unrelated paths are staged. Takes the same project
+ * lock as dispatch and reject.
+ * Returns { runId, staged, leftAlone }.
  */
 export function acceptRun({ root, runId, config = {} }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
@@ -440,12 +441,15 @@ export function acceptRun({ root, runId, config = {} }) {
       entries.filter((e) => e.xy[0] !== ' ' && e.xy[0] !== '?').map((e) => e.path)
     );
     const alreadyStaged = leftAlone.filter((p) => stagedEntries.has(p)).sort();
+    if (alreadyStaged.length) {
+      throw new Error(`cannot accept run ${prev.runId}: unrelated paths are already staged and would be committed with it: ${alreadyStaged.join(', ')}. Unstage them (git restore --staged -- <path>) or commit them separately, then run zc accept again.`);
+    }
     if (owned.length) {
       G.git(root, ['--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], {
         input: owned.join('\0')
       });
     }
-    return { runId: prev.runId, staged: owned.sort(), leftAlone, alreadyStaged };
+    return { runId: prev.runId, staged: owned.sort(), leftAlone };
   } finally {
     release();
   }
