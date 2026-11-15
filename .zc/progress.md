@@ -16,3 +16,4 @@ One line per accepted task: date, task id, run id, commit.
 - 2026-11-15 T-017 run 20261115164037-vqq7 (OK): measure.mjs compare --key reads one prompt-size section of combined files
 - 2026-11-15 T-018 runs 20261115165835-7ul7 (OK, review found verify-written files inherited) + repair 20261115171413-w1ku (OK): repair scope check covers only the repair's own changes; result.inherited
 - 2026-11-15 T-019 run 20261115180018-qb6o (OK): repair tasks declare cause/causeNote, recorded as result.repairCause; CLI refuses --repair without cause; chained-repair test
+- 2026-11-15 T-020 run 20261115184429-kxny (OK): measure.mjs runs reports repairCauses per group (repair runs by repairCause.kind, unrecorded for none); contract required adding the new note to the pinned notes test
