@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { dispatch } from '../src/dispatch.mjs';
-import { loadEccRules, selectEccRules } from '../src/prompt.mjs';
+import { statusEntries } from '../src/gitx.mjs';
+import { WORKER_EXCLUDED_RULES, WORKER_REQUIRED_RULES, loadEccRules, selectEccRules } from '../src/prompt.mjs';
 import { addFake, makeHome, makeRepo, task } from './helpers.mjs';
 
 function makeTestEcc(extraFiles = {}) {
@@ -67,7 +68,7 @@ test('worker-relevant ECC rules: manager files and hooks/agents are excluded, se
   assert.equal(loadEccRules(config), result.text);
 });
 
-test('exact boundary: maxChars equal to summed cost includes all, one less omits the last whole section', () => {
+test('exact boundary: maxChars equal to summed cost includes all; one less throws because testing.md is required', () => {
   const eccDir = makeTestEcc();
   const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
 
@@ -84,39 +85,40 @@ test('exact boundary: maxChars equal to summed cost includes all, one less omits
   assert.deepEqual(fitsAll.omitted, []);
   assert.equal(fitsAll.text, `${sec1Text}\n\n${sec2Text}`);
 
-  // One less: omits the last whole section
+  // One less: throws because testing.md is required
   config.ecc.maxChars = totalCost - 1;
-  const omitsLast = selectEccRules(config);
-  assert.deepEqual(omitsLast.included, ['common/security.md']);
-  assert.deepEqual(omitsLast.omitted, ['common/testing.md']);
-  assert.equal(
-    omitsLast.text,
-    `${sec1Text}\n\n[ECC rules omitted - over ecc.maxChars (${totalCost - 1}): common/testing.md]`
+  assert.throws(
+    () => selectEccRules(config),
+    /ECC rule common\/testing\.md is required for workers/
   );
 });
 
 test('over budget: omitted labels listed in marker, each included body whole, no omitted body appears', () => {
   const eccDir = makeTestEcc({
+    'rules/common/a-extra.md': 'MARKER-A-EXTRA',
     'rules/common/z-extra.md': 'MARKER-EXTRA'
   });
   const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
 
   const sec1Text = '### common/security.md\nMARKER-SECURITY';
+  const sec2Text = '### common/testing.md\nMARKER-TESTING';
   const cost1 = sec1Text.length + 2;
+  const cost2 = sec2Text.length + 2;
+  const max = cost1 + cost2;
 
-  // Budget accommodates only the first section
-  config.ecc.maxChars = cost1;
+  config.ecc.maxChars = max;
   const r = selectEccRules(config);
-  assert.deepEqual(r.included, ['common/security.md']);
-  assert.deepEqual(r.omitted, ['common/testing.md', 'common/z-extra.md']);
+  assert.deepEqual(r.included, ['common/security.md', 'common/testing.md']);
+  assert.deepEqual(r.omitted, ['common/a-extra.md', 'common/z-extra.md']);
   assert.equal(
     r.text,
-    `${sec1Text}\n\n[ECC rules omitted - over ecc.maxChars (${cost1}): common/testing.md, common/z-extra.md]`
+    `${sec1Text}\n\n${sec2Text}\n\n[ECC rules omitted - over ecc.maxChars (${max}): common/a-extra.md, common/z-extra.md]`
   );
   // Each included body appears whole
   assert.ok(r.text.includes('MARKER-SECURITY'));
-  // No omitted body appears at all
-  assert.ok(!r.text.includes('MARKER-TESTING'));
+  assert.ok(r.text.includes('MARKER-TESTING'));
+  // Neither MARKER-A-EXTRA nor MARKER-EXTRA appears in text
+  assert.ok(!r.text.includes('MARKER-A-EXTRA'));
   assert.ok(!r.text.includes('MARKER-EXTRA'));
 });
 
@@ -195,4 +197,183 @@ test('missing rule pack throws pack-not-found error', () => {
     () => selectEccRules(config),
     /ECC rule pack "missing" \(ecc\.rulePacks\) not found/
   );
+});
+
+test('required rules across packs are kept first; output keeps pack-then-name order', () => {
+  const eccDir = makeTestEcc({
+    'rules/common/a-extra.md': 'MARKER-COMMON-EXTRA',
+    'rules/dart/architecture.md': 'MARKER-DART-ARCH',
+    'rules/dart/security.md': 'MARKER-DART-SECURITY',
+    'rules/dart/testing.md': 'MARKER-DART-TESTING'
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common', 'dart'] } });
+
+  const secCommonSec = '### common/security.md\nMARKER-SECURITY';
+  const secCommonTest = '### common/testing.md\nMARKER-TESTING';
+  const secDartSec = '### dart/security.md\nMARKER-DART-SECURITY';
+  const secDartTest = '### dart/testing.md\nMARKER-DART-TESTING';
+
+  const max = (secCommonSec.length + 2) +
+    (secCommonTest.length + 2) +
+    (secDartSec.length + 2) +
+    (secDartTest.length + 2);
+
+  config.ecc.maxChars = max;
+  const r = selectEccRules(config);
+  assert.deepEqual(r.included, [
+    'common/security.md',
+    'common/testing.md',
+    'dart/security.md',
+    'dart/testing.md'
+  ]);
+  assert.deepEqual(r.omitted, [
+    'common/a-extra.md',
+    'dart/architecture.md'
+  ]);
+});
+
+test('when everything fits, text keeps original order (non-required before required when they sort first)', () => {
+  const eccDir = makeTestEcc({
+    'rules/common/a-extra.md': 'MARKER-A-EXTRA',
+    'rules/common/z-extra.md': 'MARKER-Z-EXTRA'
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
+  config.ecc.maxChars = 10000;
+
+  const secA = '### common/a-extra.md\nMARKER-A-EXTRA';
+  const secSec = '### common/security.md\nMARKER-SECURITY';
+  const secTest = '### common/testing.md\nMARKER-TESTING';
+  const secZ = '### common/z-extra.md\nMARKER-Z-EXTRA';
+
+  const r = selectEccRules(config);
+  assert.deepEqual(r.included, [
+    'common/a-extra.md',
+    'common/security.md',
+    'common/testing.md',
+    'common/z-extra.md'
+  ]);
+  assert.deepEqual(r.omitted, []);
+  assert.equal(r.text, `${secA}\n\n${secSec}\n\n${secTest}\n\n${secZ}`);
+  assert.ok(!r.text.includes('[ECC rules omitted'));
+});
+
+test('required rule that does not fit throws; nothing is returned', () => {
+  const eccDir = makeTestEcc();
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
+
+  const secText = '### common/security.md\nMARKER-SECURITY';
+  const costSec = secText.length + 2;
+  config.ecc.maxChars = costSec + 1;
+
+  assert.throws(
+    () => selectEccRules(config),
+    /ECC rule common\/testing\.md is required for workers \(security\/testing\) but does not fit in ecc\.maxChars \(\d+\) after \d+ characters/
+  );
+});
+
+test('dispatch stops before any worker when required rules do not fit', async () => {
+  makeHome();
+  const eccDir = makeTestEcc();
+  const { dir, config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
+  const secText = '### common/security.md\nMARKER-SECURITY';
+  config.ecc.maxChars = secText.length + 2 + 1;
+
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'x' } });
+  await assert.rejects(
+    dispatch({ root: dir, task: task('id: T-1\nallowed:\n  - src/'), config }),
+    /required for workers/
+  );
+
+  assert.deepEqual(statusEntries(dir), []); // .zc/ is zc's own folder and is not counted, as in test/dispatch.test.mjs:12
+});
+
+test('WORKER_REQUIRED_RULES and WORKER_EXCLUDED_RULES do not overlap', () => {
+  for (const name of WORKER_REQUIRED_RULES) {
+    assert.ok(!WORKER_EXCLUDED_RULES.has(name), `${name} must not be in WORKER_EXCLUDED_RULES`);
+  }
+});
+
+test("pack without required files keeps today's prefix selection", () => {
+  const eccDir = makeTestEcc({
+    'rules/extra/a.md': 'A'.repeat(50),
+    'rules/extra/b.md': 'B'.repeat(50)
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common', 'extra'] } });
+
+  const secCommonSec = '### common/security.md\nMARKER-SECURITY';
+  const secCommonTest = '### common/testing.md\nMARKER-TESTING';
+  const secExtraA = `### extra/a.md\n${'A'.repeat(50)}`;
+
+  const max = (secCommonSec.length + 2) +
+    (secCommonTest.length + 2) +
+    (secExtraA.length + 2);
+
+  config.ecc.maxChars = max;
+  const r = selectEccRules(config);
+  assert.deepEqual(r.included, [
+    'common/security.md',
+    'common/testing.md',
+    'extra/a.md'
+  ]);
+  assert.deepEqual(r.omitted, ['extra/b.md']);
+});
+
+test('pack with only excluded files returns empty text without throwing', () => {
+  const eccDir = makeTestEcc({
+    'rules/onlyex/hooks.md': 'HOOKS',
+    'rules/onlyex/agents.md': 'AGENTS'
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['onlyex'] } });
+  config.ecc.maxChars = 1000;
+
+  const r = selectEccRules(config);
+  assert.deepEqual(r, {
+    text: '',
+    included: [],
+    excluded: ['onlyex/agents.md', 'onlyex/hooks.md'],
+    omitted: []
+  });
+});
+
+test('first required file too large throws even when a non-required file sorting first would fit', () => {
+  const secSecBody = 'S'.repeat(200);
+  const eccDir = makeTestEcc({
+    'rules/common/a-extra.md': 'A',
+    'rules/common/security.md': secSecBody
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['common'] } });
+
+  const secAText = '### common/a-extra.md\nA';
+  const secSecText = `### common/security.md\n${secSecBody}`;
+  const secTestText = '### common/testing.md\nMARKER-TESTING';
+  const costA = secAText.length + 2;
+  const costTest = secTestText.length + 2;
+  const max = costA + costTest + 10;
+  config.ecc.maxChars = max;
+
+  assert.throws(
+    () => selectEccRules(config),
+    {
+      name: 'Error',
+      message: `ECC rule common/security.md is ${secSecText.length} characters, over ecc.maxChars (${max}); raise ecc.maxChars or remove the pack`
+    }
+  );
+});
+
+test('required match ignores case', () => {
+  const eccDir = makeTestEcc({
+    'rules/mixed/a.md': 'A',
+    'rules/mixed/Security.md': 'S',
+    'rules/mixed/TESTING.md': 'T'
+  });
+  const { config } = makeRepo({ ecc: { path: eccDir, rulePacks: ['mixed'] } });
+
+  const secSecText = '### mixed/Security.md\nS';
+  const secTestText = '### mixed/TESTING.md\nT';
+  const max = (secSecText.length + 2) + (secTestText.length + 2);
+  config.ecc.maxChars = max;
+
+  const r = selectEccRules(config);
+  assert.deepEqual(r.included, ['mixed/Security.md', 'mixed/TESTING.md']);
+  assert.deepEqual(r.omitted, ['mixed/a.md']);
 });

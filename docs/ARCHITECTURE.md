@@ -39,7 +39,7 @@ Every run writes `result.json`, each attempt's prompt and raw event stream, and 
 ## ECC's two roles
 
 - **Manager side:** installed as a Claude Code plugin. The skill names the ECC agents and skills to use for planning, TDD, review and security.
-- **Worker side:** Gemini does not run ECC hooks, so the chosen rule packs (`rules/common`, `rules/dart`, `rules/typescript`, ...) are read from `ecc.path` (manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted) and placed in each worker prompt. `zc dispatch --dry-run` shows exactly what a worker will receive.
+- **Worker side:** Gemini does not run ECC hooks, so the chosen rule packs (`rules/common`, `rules/dart`, `rules/typescript`, ...) are read from `ecc.path` (manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`; `security.md` and `testing.md` are kept first and never dropped: if they do not fit, dispatch stops with an error, and `result.json` records `eccRules` included/excluded/omitted) and placed in each worker prompt. `zc dispatch --dry-run` shows exactly what a worker will receive.
 
 ## State
 

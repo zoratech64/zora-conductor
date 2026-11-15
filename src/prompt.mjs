@@ -12,6 +12,9 @@ export const WORKER_EXCLUDED_RULES = new Set([
   'git-workflow.md'
 ]);
 
+/** Worker rule files that are never dropped for budget: if they do not fit, selection fails instead. */
+export const WORKER_REQUIRED_RULES = new Set(['security.md', 'testing.md']);
+
 /** Older built-in prefixes that `zc init` once copied into projects; they follow the current default. */
 const NO_COMMANDS_LINE = /^- You cannot run shell commands:.*\n/m;
 
@@ -55,6 +58,7 @@ export function loadPrefix(root, config) {
 /**
  * Select worker-relevant ECC rule files under the budget. Whole files are kept or dropped;
  * files that do not fit are omitted and recorded.
+ * security.md and testing.md are selected first and never omitted; if they do not fit, it throws.
  */
 export function selectEccRules(config) {
   if (!config.ecc.rulePacks.length) {
@@ -78,30 +82,48 @@ export function selectEccRules(config) {
         excluded.push(label);
       } else {
         const { body } = readAsset(base, `rules/${pack}/${name}`, { maxBytes: config.ecc.assetMaxBytes });
-        candidates.push({ label, text: `### ${label}\n${body}` });
+        const required = WORKER_REQUIRED_RULES.has(name.toLowerCase());
+        candidates.push({ label, text: `### ${label}\n${body}`, required });
       }
     }
   }
 
   const max = config.ecc.maxChars;
+  const selectionOrder = [
+    ...candidates.filter((c) => c.required),
+    ...candidates.filter((c) => !c.required)
+  ];
+
+  const chosen = new Set();
+  let used = 0;
+
+  for (const cand of selectionOrder) {
+    const cost = cand.text.length + 2;
+    if (used + cost <= max) {
+      chosen.add(cand);
+      used += cost;
+    } else if (chosen.size === 0) {
+      throw new Error(`ECC rule ${cand.label} is ${cand.text.length} characters, over ecc.maxChars (${max}); raise ecc.maxChars or remove the pack`);
+    } else if (cand.required) {
+      throw new Error(`ECC rule ${cand.label} is required for workers (security/testing) but does not fit in ecc.maxChars (${max}) after ${used} characters of other required rules; raise ecc.maxChars or remove a pack`);
+    } else {
+      break;
+    }
+  }
+
   const included = [];
   const includedSections = [];
-  let used = 0;
-  let i = 0;
+  const omitted = [];
 
-  for (; i < candidates.length; i++) {
-    const cost = candidates[i].text.length + 2;
-    if (used + cost > max) break;
-    included.push(candidates[i].label);
-    includedSections.push(candidates[i].text);
-    used += cost;
+  for (const cand of candidates) {
+    if (chosen.has(cand)) {
+      included.push(cand.label);
+      includedSections.push(cand.text);
+    } else {
+      omitted.push(cand.label);
+    }
   }
 
-  if (i === 0 && candidates.length) {
-    throw new Error(`ECC rule ${candidates[0].label} is ${candidates[0].text.length} characters, over ecc.maxChars (${max}); raise ecc.maxChars or remove the pack`);
-  }
-
-  const omitted = candidates.slice(i).map((c) => c.label);
   let text = includedSections.join('\n\n');
   if (omitted.length) {
     text = text
