@@ -407,7 +407,7 @@ test('post-verify: verify moves HEAD -> NEEDS_HUMAN (exitCode 3)', async () => {
   assert.match(r.nextAction, /verify/);
 });
 
-test('post-verify: verify writes in allowed paths -> OK and recorded in changed', async () => {
+test('post-verify: verify writes in allowed paths -> OK, recorded in verifyChanged only', async () => {
   makeHome();
   const { dir, config } = makeRepo();
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
@@ -417,7 +417,7 @@ test('post-verify: verify writes in allowed paths -> OK and recorded in changed'
   const r = await dispatch({ root: dir, task: t, config });
   assert.equal(r.status, 'OK');
   assert.deepEqual(r.verifyChanged, ['src/gen.txt']);
-  assert.deepEqual(r.changed, ['src/a.txt', 'src/gen.txt']);
+  assert.deepEqual(r.changed, ['src/a.txt']);
 });
 
 test('post-verify: verify overwrites .zc/config.json and exits 1 -> SCOPE_VIOLATION not VERIFY_FAILED', async () => {

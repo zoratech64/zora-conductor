@@ -144,20 +144,22 @@ test('accept without runId accepts the latest run', async () => {
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), 'src/a.txt');
 });
 
-test('accept refuses run where verify command wrote a file outside allowed', async () => {
+test('accept refuses run where verify command wrote a file inside allowed', async () => {
   makeHome();
-  const verifyCmd = [process.execPath, '-e', "require('fs').writeFileSync('dist.txt','x')"];
+  const verifyCmd = [process.execPath, '-e', "require('fs').writeFileSync('src/gen.txt','x')"];
   const { dir, config } = makeRepo({ verify: [verifyCmd] });
   const t = task('id: T-9\nallowed:\n  - src/');
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'ok\n' } });
   const run = await dispatch({ root: dir, task: t, config });
   assert.equal(run.status, 'OK');
+  assert.deepEqual(run.changed, ['src/a.txt']);
+  assert.deepEqual(run.verifyChanged, ['src/gen.txt']);
 
   assert.throws(
     () => acceptRun({ root: dir, runId: run.runId, config }),
     (err) => {
       assert.match(err.message, /paths outside the task scope or not checked as the worker's change/);
-      assert.match(err.message, /dist\.txt/);
+      assert.match(err.message, /src\/gen\.txt/);
       return true;
     }
   );

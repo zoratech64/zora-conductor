@@ -187,16 +187,17 @@ test('repair does not inherit files the repaired run\'s verify wrote', async () 
   const { dir, config } = makeRepo();
   const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
   const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
-  failing.meta.verify = [[process.execPath, '-e', 'require("fs").mkdirSync("other",{recursive:true});require("fs").writeFileSync("other/gen.txt","g");process.exit(1)']];
+  failing.meta.verify = [[process.execPath, '-e', 'require("fs").writeFileSync("src/gen.txt","g");process.exit(1)']];
   const first = await dispatch({ root: dir, task: failing, config });
   assert.equal(first.status, 'VERIFY_FAILED');
   assert.deepEqual(first.changed, ['src/a.txt']);
+  assert.deepEqual(first.verifyChanged, ['src/gen.txt']);
 
   setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
   const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
   const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
   assert.equal(repair.status, 'SCOPE_VIOLATION');
-  assert.deepEqual(repair.outOfScope, ['other/gen.txt']);
+  assert.deepEqual(repair.outOfScope, ['src/gen.txt']);
   assert.deepEqual(repair.inherited, ['src/a.txt']);
 });
 
@@ -249,16 +250,17 @@ test('chained repair: files a middle repair\'s verify wrote are not inherited by
 
   setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
   const taskB = task('id: T-b\nallowed:\n  - test/', 'Task B.');
-  taskB.meta.verify = [[process.execPath, '-e', 'require("fs").mkdirSync("other",{recursive:true});require("fs").writeFileSync("other/x.txt","x");process.exit(1)']];
+  taskB.meta.verify = [[process.execPath, '-e', 'require("fs").writeFileSync("test/x.txt","x");process.exit(1)']];
   const b = await dispatch({ root: dir, task: taskB, config, repairOf: a.runId });
   assert.equal(b.status, 'VERIFY_FAILED');
   assert.deepEqual(b.inherited, ['src/a.txt']);
+  assert.deepEqual(b.verifyChanged, ['test/x.txt']);
 
   setScenario(g1, { mode: 'ok', write: { 'docs/d.txt': 'd' } });
   const taskC = task('id: T-c\nallowed:\n  - docs/', 'Task C.');
   const c = await dispatch({ root: dir, task: taskC, config, repairOf: b.runId });
   assert.equal(c.status, 'SCOPE_VIOLATION');
-  assert.deepEqual(c.outOfScope, ['other/x.txt']);
+  assert.deepEqual(c.outOfScope, ['test/x.txt']);
   assert.deepEqual(c.inherited, ['src/a.txt', 'test/b.txt']);
 });
 

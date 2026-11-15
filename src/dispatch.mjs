@@ -391,7 +391,6 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
         if (verifyChanged.length) {
           result.verifyChanged = verifyChanged;
-          result.changed = [...new Set([...changed, ...verifyChanged])].sort();
         }
 
         if (result.verify.some((v) => !v.ok)) {

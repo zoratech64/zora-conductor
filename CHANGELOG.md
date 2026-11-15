@@ -17,6 +17,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 ### Changed
 
 - Worker prompts always keep the ECC `security.md` and `testing.md` rule files: past `ecc.maxChars`, other rule files are dropped first, and if those two files alone do not fit, `zc dispatch` (and `zc doctor`) report an error instead of leaving them out.
+- After the verify commands run, zc repeats the `.zc/`, HEAD/branch and scope checks. A verify command that changes files outside the task's `allowed` paths (or `.zc/`) now ends the run `SCOPE_VIOLATION` (`phase: "verify"`) instead of `OK` or `VERIFY_FAILED`; one that moves HEAD ends `NEEDS_HUMAN`. Files verify writes inside `allowed` are listed in `result.verifyChanged` only: they are not the worker's change, a repair does not inherit them, and `zc accept` refuses the run while they are present.
 
 ### Fixed
 
