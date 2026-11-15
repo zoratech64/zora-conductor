@@ -89,7 +89,7 @@ Commands and agents describe procedures that rely on tools workers do not have (
 
 ## Measuring efficiency
 
-`node scripts/measure.mjs` provides three read-only subcommands: `prompt` measures prompt and rule sizes for task files; `runs` aggregates metrics across recorded run results; and `compare` computes before-and-after prompt size deltas. For combined files that keep several prompt-size results under named keys, such as `.zc/baseline-pre.json`, pass `compare --key <name>` to compare one section.
+`node scripts/measure.mjs` provides three read-only subcommands: `prompt` measures prompt and rule sizes for task files; `runs` aggregates metrics across recorded run results, including repair counts by `repairCause.kind` (`repairCauses`); and `compare` computes before-and-after prompt size deltas. For combined files that keep several prompt-size results under named keys, such as `.zc/baseline-pre.json`, pass `compare --key <name>` to compare one section.
 All commands are strictly read-only and dispatch no worker.
 Missing fields in run records are tracked explicitly as missing rather than treated as zero.
 Worker token and tool metrics reflect Gemini execution reported by `agy`, not Claude (manager) token use.

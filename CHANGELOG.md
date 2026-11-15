@@ -12,6 +12,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 - `scripts/measure.mjs compare --key <name>` compares one named prompt-size section of combined measurement files such as `.zc/baseline-pre.json`. Without `--key`, a combined file is still rejected, and the error now names the sections it holds.
 - Repair tasks declare why the repair is needed: `cause: worker|contract|environment|verify` and an optional one-line `causeNote:` in front matter. They are recorded in `result.json` as `repairCause`. `zc dispatch --repair` refuses a task without a valid `cause`.
+- `scripts/measure.mjs runs` reports `repairCauses` per group: repair runs counted by `repairCause.kind` (`worker`, `contract`, `environment`, `verify`), with repair runs that have no recorded cause counted as `unrecorded`.
 
 ### Changed
 

@@ -170,6 +170,7 @@ test('reportRuns: empty and missing runs dir -> runs 0 per group, no unreadable'
   assert.equal(res.groups.all.runs, 0);
   assert.equal(res.groups.all.attempts, 0);
   assert.equal(res.groups.all.repairRuns, 0);
+  assert.deepEqual(res.groups.all.repairCauses, { worker: 0, contract: 0, environment: 0, verify: 0, unrecorded: 0 });
   assert.deepEqual(res.groups.all.statuses, {});
   assert.equal(res.groups.all.metrics.promptBytes.n, 0);
   assert.equal(res.groups.all.metrics.promptBytes.missing, 0);
@@ -391,7 +392,8 @@ test('reportRuns: representative valid results (two runs, one with repairOf, sta
   assert.deepEqual(res.notes, [
     'promptBytes is prompt size, not token usage.',
     'worker*Tokens are Gemini worker usage reported by agy; they say nothing about Claude (manager) token use.',
-    'missing counts entries without that field; they are never counted as zero.'
+    'missing counts entries without that field; they are never counted as zero.',
+    'repairCauses.unrecorded counts repair runs with no valid repairCause.kind, such as runs recorded before repair causes existed.'
   ]);
 });
 
@@ -447,6 +449,94 @@ test('reportRuns: report is read-only: file mtimes and contents unchanged after 
 
   assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs);
   assert.equal(afterContent, beforeContent);
+});
+
+test('reportRuns: repairCauses counts repair runs by repairCause.kind; missing or invalid kinds are unrecorded', () => {
+  const runsDir = mkdtempSync(join(tmpdir(), 'zc-repair-causes-'));
+
+  const runs = [
+    { name: 'r1', data: { runId: 'r1', repairOf: 'x', repairCause: { kind: 'contract', note: 'n' }, attempts: [] } },
+    { name: 'r2', data: { runId: 'r2', repairOf: 'x', repairCause: { kind: 'contract', note: null }, attempts: [] } },
+    { name: 'r3', data: { runId: 'r3', repairOf: 'x', repairCause: { kind: 'worker', note: null }, attempts: [] } },
+    { name: 'r4', data: { runId: 'r4', repairOf: 'x', attempts: [] } },
+    { name: 'r5', data: { runId: 'r5', repairOf: 'x', repairCause: { kind: null, note: null }, attempts: [] } },
+    { name: 'r6', data: { runId: 'r6', repairOf: 'x', repairCause: { kind: 'typo' }, attempts: [] } },
+    { name: 'r7', data: { runId: 'r7', repairOf: null, repairCause: { kind: 'verify' }, attempts: [] } },
+    { name: 'r8', data: { runId: 'r8', repairOf: 'x', repairCause: 'contract', attempts: [] } }
+  ];
+
+  for (const { name, data } of runs) {
+    const dir = join(runsDir, name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'result.json'), JSON.stringify(data));
+  }
+
+  const res = reportRuns({ dirs: [runsDir] });
+  assert.equal(res.groups.all.repairRuns, 7);
+  assert.deepEqual(res.groups.all.repairCauses, {
+    worker: 1,
+    contract: 2,
+    environment: 0,
+    verify: 0,
+    unrecorded: 4
+  });
+  assert.deepEqual(
+    Object.keys(res.groups.all),
+    ['runs', 'statuses', 'repairRuns', 'repairCauses', 'attempts', 'metrics']
+  );
+  const sumCauses = Object.values(res.groups.all.repairCauses).reduce((a, b) => a + b, 0);
+  assert.equal(sumCauses, res.groups.all.repairRuns);
+});
+
+test('reportRuns: repairCauses is computed per split group', () => {
+  const runsDir = mkdtempSync(join(tmpdir(), 'zc-split-repair-causes-'));
+  const bDir = join(runsDir, 'run-b');
+  const aDir = join(runsDir, 'run-a');
+  const uDir = join(runsDir, 'run-u');
+  mkdirSync(bDir, { recursive: true });
+  mkdirSync(aDir, { recursive: true });
+  mkdirSync(uDir, { recursive: true });
+
+  writeFileSync(
+    join(bDir, 'result.json'),
+    JSON.stringify({
+      runId: 'run-b',
+      repairOf: 'prev',
+      repairCause: { kind: 'environment' },
+      startedAt: '2026-11-01T10:00:00.000Z',
+      attempts: []
+    })
+  );
+  writeFileSync(
+    join(aDir, 'result.json'),
+    JSON.stringify({
+      runId: 'run-a',
+      repairOf: 'prev',
+      repairCause: { kind: 'verify' },
+      startedAt: '2026-11-10T10:00:00.000Z',
+      attempts: []
+    })
+  );
+  writeFileSync(
+    join(uDir, 'result.json'),
+    JSON.stringify({
+      runId: 'run-u',
+      startedAt: 'not-a-valid-date',
+      attempts: []
+    })
+  );
+
+  const res = reportRuns({ dirs: [runsDir], split: '2026-11-05T00:00:00.000Z' });
+  assert.equal(res.groups.before.repairCauses.environment, 1);
+  assert.equal(res.groups.before.repairCauses.verify, 0);
+  assert.equal(res.groups.after.repairCauses.verify, 1);
+  assert.deepEqual(res.groups.undated.repairCauses, {
+    worker: 0,
+    contract: 0,
+    environment: 0,
+    verify: 0,
+    unrecorded: 0
+  });
 });
 
 test('selectPromptSection: undefined key returns the document, named key returns the section, missing key / non-object / empty key throw', () => {

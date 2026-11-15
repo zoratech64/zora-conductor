@@ -7,7 +7,7 @@ import { dispatch } from '../src/dispatch.mjs';
 import { head } from '../src/gitx.mjs';
 import { runsDir, stateRoot } from '../src/paths.mjs';
 import { loadEccAssets, selectEccRules } from '../src/prompt.mjs';
-import { parseTask } from '../src/task.mjs';
+import { parseTask, REPAIR_CAUSES } from '../src/task.mjs';
 
 const USAGE = [
   'usage: node scripts/measure.mjs prompt [--project <dir>] [--packs <a,b>] <task.md>...',
@@ -18,7 +18,8 @@ const USAGE = [
 const RUN_REPORT_NOTES = [
   'promptBytes is prompt size, not token usage.',
   'worker*Tokens are Gemini worker usage reported by agy; they say nothing about Claude (manager) token use.',
-  'missing counts entries without that field; they are never counted as zero.'
+  'missing counts entries without that field; they are never counted as zero.',
+  'repairCauses.unrecorded counts repair runs with no valid repairCause.kind, such as runs recorded before repair causes existed.'
 ];
 
 function isPlainObject(value) {
@@ -170,6 +171,11 @@ function collectRunRecords(dirs) {
 function summarizeGroup(runs) {
   const statuses = {};
   let repairRuns = 0;
+  const repairCauses = {};
+  for (const c of REPAIR_CAUSES) {
+    repairCauses[c] = 0;
+  }
+  repairCauses.unrecorded = 0;
   let attempts = 0;
 
   const pBytes = []; let pBytesMiss = 0;
@@ -193,6 +199,11 @@ function summarizeGroup(runs) {
 
     if (r.repairOf != null && r.repairOf !== '') {
       repairRuns += 1;
+      if (isPlainObject(r.repairCause) && typeof r.repairCause.kind === 'string' && REPAIR_CAUSES.includes(r.repairCause.kind)) {
+        repairCauses[r.repairCause.kind] += 1;
+      } else {
+        repairCauses.unrecorded += 1;
+      }
     }
 
     if (Array.isArray(r.attempts)) {
@@ -235,6 +246,7 @@ function summarizeGroup(runs) {
     runs: runs.length,
     statuses,
     repairRuns,
+    repairCauses,
     attempts,
     metrics: {
       promptBytes: calcMetricStats(pBytes, pBytesMiss),
