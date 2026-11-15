@@ -13,3 +13,4 @@ One line per accepted task: date, task id, run id, commit.
 - 2026-11-15 T-014 (commit b5bd2ef): keep security.md and testing.md in worker prompts; error if they do not fit
 - 2026-11-15 T-015 manager edit, no run (commit 5f4c46d): Phase 1 run report and prompt comparison in .zc/measure-phase1-runs.json
 - 2026-11-15 T-016 run 20261115160552-mclt (OK): measure.mjs rulesTruncated derived from selectEccRules omitted list
+- 2026-11-15 T-017 run 20261115164037-vqq7 (OK): measure.mjs compare --key reads one prompt-size section of combined files

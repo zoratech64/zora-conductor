@@ -12,7 +12,7 @@ import { parseTask } from '../src/task.mjs';
 const USAGE = [
   'usage: node scripts/measure.mjs prompt [--project <dir>] [--packs <a,b>] <task.md>...',
   '       node scripts/measure.mjs runs [--project <dir>] [--all-projects] [--split <ISO date>]',
-  '       node scripts/measure.mjs compare <pre.json> <post.json>'
+  '       node scripts/measure.mjs compare [--key <name>] <pre.json> <post.json>'
 ].join('\n');
 
 const RUN_REPORT_NOTES = [
@@ -308,6 +308,19 @@ export function reportRuns({ dirs, split } = {}) {
   };
 }
 
+export function selectPromptSection(doc, key, label) {
+  if (key === undefined) {
+    return doc;
+  }
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new Error('--key needs a value');
+  }
+  if (!isPlainObject(doc) || !Object.hasOwn(doc, key)) {
+    throw new Error(`${label} has no "${key}" section`);
+  }
+  return doc[key];
+}
+
 export function comparePromptSizes(pre, post) {
   if (pre?.kind !== 'prompt-size' || post?.kind !== 'prompt-size') {
     throw new Error('both arguments must have kind: "prompt-size"');
@@ -481,12 +494,45 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(1);
     }
 
+    function findPromptSections(pre, post) {
+      const sections = [];
+      if (isPlainObject(pre)) {
+        for (const [k, v] of Object.entries(pre)) {
+          if (isPlainObject(v) && v.kind === 'prompt-size') {
+            sections.push(k);
+          }
+        }
+      }
+      if (isPlainObject(post)) {
+        for (const [k, v] of Object.entries(post)) {
+          if (isPlainObject(v) && v.kind === 'prompt-size' && !sections.includes(k)) {
+            sections.push(k);
+          }
+        }
+      }
+      return sections;
+    }
+
     try {
       const preText = readFileSync(resolve(prePath), 'utf8');
       const postText = readFileSync(resolve(postPath), 'utf8');
-      const pre = JSON.parse(preText);
-      const post = JSON.parse(postText);
-      const result = comparePromptSizes(pre, post);
+      const pre = selectPromptSection(JSON.parse(preText), opts.key, prePath);
+      const post = selectPromptSection(JSON.parse(postText), opts.key, postPath);
+      let result;
+      try {
+        result = comparePromptSizes(pre, post);
+      } catch (error) {
+        if (opts.key === undefined) {
+          const sections = findPromptSections(pre, post);
+          if (sections.length > 0) {
+            console.error(
+              `measure: ${error.message}; these files hold prompt-size sections, use --key <name>: ${sections.join(', ')}`
+            );
+            process.exit(1);
+          }
+        }
+        throw error;
+      }
       console.log(JSON.stringify(result, null, 2));
     } catch (error) {
       console.error(`measure: ${error.message}`);

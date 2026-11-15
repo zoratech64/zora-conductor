@@ -7,7 +7,12 @@ import { test } from 'node:test';
 import { dispatch } from '../src/dispatch.mjs';
 import { head } from '../src/gitx.mjs';
 import { parseTask } from '../src/task.mjs';
-import { comparePromptSizes, measurePrompts, reportRuns } from '../scripts/measure.mjs';
+import {
+  comparePromptSizes,
+  measurePrompts,
+  reportRuns,
+  selectPromptSection
+} from '../scripts/measure.mjs';
 import { fakeEcc, makeRepo } from './helpers.mjs';
 
 test('measurePrompts: repo with a task file gives promptBytes > 0 and matches dry-run prompt bytes', async () => {
@@ -444,6 +449,32 @@ test('reportRuns: report is read-only: file mtimes and contents unchanged after 
   assert.equal(afterContent, beforeContent);
 });
 
+test('selectPromptSection: undefined key returns the document, named key returns the section, missing key / non-object / empty key throw', () => {
+  const doc = { s: { kind: 'prompt-size' } };
+  assert.equal(selectPromptSection(doc, undefined, 'a.json'), doc);
+  assert.equal(selectPromptSection(doc, 's', 'a.json'), doc.s);
+  assert.throws(
+    () => selectPromptSection(doc, 'nope', 'a.json'),
+    /a\.json has no "nope" section/
+  );
+  assert.throws(
+    () => selectPromptSection({}, '__proto__', 'a.json'),
+    /a\.json has no "__proto__" section/
+  );
+  assert.throws(
+    () => selectPromptSection([], 's', 'a.json'),
+    /a\.json has no "s" section/
+  );
+  assert.throws(
+    () => selectPromptSection(null, 's', 'a.json'),
+    /a\.json has no "s" section/
+  );
+  assert.throws(
+    () => selectPromptSection(doc, '', 'a.json'),
+    /--key needs a value/
+  );
+});
+
 test('comparePromptSizes: deltas correct for paired files, different rulePacks/maxChars -> comparable false, wrong kind throws, unpaired listed', () => {
   assert.throws(
     () => comparePromptSizes({ kind: 'other' }, { kind: 'prompt-size' }),
@@ -563,4 +594,81 @@ test('measure CLI: runs and compare subcommands', () => {
   );
   assert.equal(compareMissing.status, 1);
   assert.match(compareMissing.stderr, /compare requires two files/);
+});
+
+test('measure CLI: compare --key reads a named section of combined files', () => {
+  const tmpHome = mkdtempSync(join(tmpdir(), 'zc-cli-combined-'));
+  const preFile = join(tmpHome, 'pre.json');
+  const postFile = join(tmpHome, 'post.json');
+
+  const pre = {
+    label: 'x',
+    alpha: {
+      kind: 'prompt-size',
+      rulePacks: ['common'],
+      maxChars: 5000,
+      tasks: [{ file: 't1.md', promptBytes: 100, eccRulesChars: 50 }]
+    },
+    beta: {
+      kind: 'prompt-size',
+      rulePacks: ['common'],
+      maxChars: 5000,
+      tasks: [{ file: 't1.md', promptBytes: 200, eccRulesChars: 50 }]
+    }
+  };
+
+  const post = {
+    label: 'x',
+    alpha: {
+      kind: 'prompt-size',
+      rulePacks: ['common'],
+      maxChars: 5000,
+      tasks: [{ file: 't1.md', promptBytes: 120, eccRulesChars: 50 }]
+    },
+    beta: {
+      kind: 'prompt-size',
+      rulePacks: ['common'],
+      maxChars: 5000,
+      tasks: [{ file: 't1.md', promptBytes: 260, eccRulesChars: 50 }]
+    }
+  };
+
+  writeFileSync(preFile, JSON.stringify(pre));
+  writeFileSync(postFile, JSON.stringify(post));
+
+  const compBeta = spawnSync(
+    process.execPath,
+    ['scripts/measure.mjs', 'compare', '--key', 'beta', preFile, postFile],
+    { encoding: 'utf8' }
+  );
+  assert.equal(compBeta.status, 0);
+  const parsedBeta = JSON.parse(compBeta.stdout);
+  assert.equal(parsedBeta.kind, 'prompt-compare');
+  assert.equal(parsedBeta.tasks[0].deltaBytes, 60);
+  assert.deepEqual(parsedBeta, comparePromptSizes(pre.beta, post.beta));
+
+  const compNoKey = spawnSync(
+    process.execPath,
+    ['scripts/measure.mjs', 'compare', preFile, postFile],
+    { encoding: 'utf8' }
+  );
+  assert.equal(compNoKey.status, 1);
+  assert.match(compNoKey.stderr, /must have kind: "prompt-size"/);
+  assert.match(compNoKey.stderr, /use --key <name>: alpha, beta/);
+
+  const compMissing = spawnSync(
+    process.execPath,
+    ['scripts/measure.mjs', 'compare', '--key', 'missing', preFile, postFile],
+    { encoding: 'utf8' }
+  );
+  assert.equal(compMissing.status, 1);
+  assert.match(compMissing.stderr, /has no "missing" section/);
+
+  const compOneFile = spawnSync(
+    process.execPath,
+    ['scripts/measure.mjs', 'compare', '--key', 'alpha', preFile],
+    { encoding: 'utf8' }
+  );
+  assert.equal(compOneFile.status, 1);
+  assert.match(compOneFile.stderr, /compare requires two files/);
 });

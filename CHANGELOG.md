@@ -8,6 +8,10 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/measure.mjs compare --key <name>` compares one named prompt-size section of combined measurement files such as `.zc/baseline-pre.json`. Without `--key`, a combined file is still rejected, and the error now names the sections it holds.
+
 ### Changed
 
 - Worker prompts always keep the ECC `security.md` and `testing.md` rule files: past `ecc.maxChars`, other rule files are dropped first, and if those two files alone do not fit, `zc dispatch` (and `zc doctor`) report an error instead of leaving them out.
