@@ -6,7 +6,7 @@ import { loadConfig } from '../src/config.mjs';
 import { dispatch } from '../src/dispatch.mjs';
 import { head } from '../src/gitx.mjs';
 import { runsDir, stateRoot } from '../src/paths.mjs';
-import { loadEccAssets, loadEccRules } from '../src/prompt.mjs';
+import { loadEccAssets, selectEccRules } from '../src/prompt.mjs';
 import { parseTask } from '../src/task.mjs';
 
 const USAGE = [
@@ -103,7 +103,7 @@ export async function measurePrompts({ root, files = [], packs } = {}) {
     const task = parseTask(text, { fallbackId: basename(file).replace(/\.\w+$/, '') });
 
     const { prompt } = await dispatch({ root: projectRoot, task, config, dryRun: true });
-    const eccRules = loadEccRules(config);
+    const { text: eccRules, omitted } = selectEccRules(config);
     const eccAssets = loadEccAssets(config, task);
 
     tasks.push({
@@ -112,7 +112,7 @@ export async function measurePrompts({ root, files = [], packs } = {}) {
       promptChars: prompt.length,
       eccRulesChars: eccRules.length,
       eccAssetsChars: eccAssets.length,
-      rulesTruncated: eccRules.includes('[... ECC rules truncated')
+      rulesTruncated: omitted.length > 0
     });
   }
 

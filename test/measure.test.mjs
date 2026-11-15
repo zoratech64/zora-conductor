@@ -52,6 +52,41 @@ test('measurePrompts: packs: [] gives eccRulesChars 0', async () => {
   assert.equal(withoutRules.tasks[0].rulesTruncated, false);
 });
 
+test('measurePrompts: rulesTruncated is true when an ECC rule file is omitted for ecc.maxChars', async () => {
+  const eccDir = fakeEcc();
+  writeFileSync(join(eccDir, 'rules', 'common', 'x-big.md'), 'X'.repeat(1200));
+  const { dir: repoWithEcc } = makeRepo({
+    ecc: { path: eccDir, rulePacks: ['common'], maxChars: 1000 }
+  });
+  const taskFile = join(repoWithEcc, 'task.md');
+  writeFileSync(taskFile, '---\nid: T-003\nallowed:\n  - src/\n---\nDo something.\n');
+
+  const res = await measurePrompts({ root: repoWithEcc, files: [taskFile] });
+  assert.equal(res.tasks[0].rulesTruncated, true);
+  assert.ok(res.tasks[0].eccRulesChars > 0);
+});
+
+test('measurePrompts: rulesTruncated is false when every ECC rule file fits', async () => {
+  const eccDir = fakeEcc();
+  writeFileSync(join(eccDir, 'rules', 'common', 'x-big.md'), 'X'.repeat(1200));
+  const { dir: repoWithEcc } = makeRepo({
+    ecc: { path: eccDir, rulePacks: ['common'], maxChars: 40000 }
+  });
+  const taskFile = join(repoWithEcc, 'task.md');
+  writeFileSync(taskFile, '---\nid: T-004\nallowed:\n  - src/\n---\nDo something.\n');
+
+  const res = await measurePrompts({ root: repoWithEcc, files: [taskFile] });
+  assert.equal(res.tasks[0].rulesTruncated, false);
+  assert.deepEqual(Object.keys(res.tasks[0]), [
+    'file',
+    'promptBytes',
+    'promptChars',
+    'eccRulesChars',
+    'eccAssetsChars',
+    'rulesTruncated'
+  ]);
+});
+
 test('measurePrompts: missing task file throws', async () => {
   const { dir } = makeRepo();
   const missingAbsolute = join(dir, 'non-existent-task.md');

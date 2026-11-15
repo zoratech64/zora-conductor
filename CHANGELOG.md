@@ -12,6 +12,10 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 - Worker prompts always keep the ECC `security.md` and `testing.md` rule files: past `ecc.maxChars`, other rule files are dropped first, and if those two files alone do not fit, `zc dispatch` (and `zc doctor`) report an error instead of leaving them out.
 
+### Fixed
+
+- `scripts/measure.mjs prompt` reports `rulesTruncated: true` again when ECC rule files are left out past `ecc.maxChars`. Since whole-file rule selection it looked for a marker that is no longer written, so it was always `false`.
+
 ## [0.2.0-alpha.2] - 2026-11-15
 
 Second pre-release, for testing only. It adds `zc accept`, makes project verification mandatory, sends workers leaner prompts with an execution contract, and records run metrics.
