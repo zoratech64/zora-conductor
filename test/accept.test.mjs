@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, dispatch } from '../src/dispatch.mjs';
 import { toplevel } from '../src/gitx.mjs';
-import { FAIL, addFake, git, makeHome, makeRepo, task } from './helpers.mjs';
+import { FAIL, addFake, git, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
 
 test('OK run: accepts and stages only recorded paths, leaving unrelated untracked files alone', async () => {
   makeHome();
@@ -305,4 +305,46 @@ test('unrelated unstaged modification and untracked file still let accept succee
 
   const status = git(dir, 'status', '--porcelain');
   assert.match(status, /\?\? notes\.txt/);
+});
+
+test('accept stages inherited files of an OK repair together with its own', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'OK');
+
+  const res = acceptRun({ root: dir, runId: repair.runId, config });
+  assert.deepEqual(res.staged, ['src/a.txt', 'test/b.txt']);
+
+  const cached = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort();
+  assert.deepEqual(cached, ['src/a.txt', 'test/b.txt']);
+});
+
+test('accept refuses an inherited path that the current config forbids', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'OK');
+
+  assert.throws(
+    () => acceptRun({ root: dir, runId: repair.runId, config: { ...config, forbidden: ['src/a.txt'] } }),
+    /src\/a\.txt/
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
 });

@@ -94,7 +94,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   const result = {
     runId: id, runDir, taskId: task.meta.id, repairOf, status: 'FAILED', exitCode: 1,
     startedAt: new Date().toISOString(), account: null, allowed, attempts: [], changed: [],
-    outOfScope: [], forbidden: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
+    outOfScope: [], forbidden: [], inherited: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
   };
   result.eccRules = eccRules;
   result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
@@ -127,6 +127,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     const dirty = G.statusEntries(root);
     let resetAllowed = config.defaults.onLimit === 'reset';
     let resumeNote = '';
+    let inheritable = false;
+    let baseline = null;
+    let prevChanged = new Set();
     if (repairOf) {
       const prev = getRun(root, repairOf);
       if (!prev) return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: `unknown run "${repairOf}" (see \`zc runs\`).` });
@@ -142,6 +145,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           nextAction: `the working tree no longer matches run ${repairOf} (HEAD moved or file contents changed). Commit or \`zc reject\` first.`
         });
       }
+      inheritable = prev.status === 'OK' || prev.status === 'VERIFY_FAILED';
+      baseline = prev.workerState;
+      prevChanged = new Set(prev.changed ?? []);
       resetAllowed = false; // the baseline is reviewed-in-progress work; never wipe it automatically
       resumeNote = REPAIR_NOTE;
     } else if (dirty.length) {
@@ -283,7 +289,22 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
           });
         }
-        const scope = partitionByScope(changed, allowed, config.forbidden);
+        let inherited = [];
+        let scope;
+        if (repairOf && inheritable) {
+          inherited = changed.filter((p) => prevChanged.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
+          const inheritedSet = new Set(inherited);
+          const own = changed.filter((p) => !inheritedSet.has(p));
+          const ownScope = partitionByScope(own, allowed, config.forbidden);
+          const inheritedScope = partitionByScope(inherited, ['**'], config.forbidden);
+          scope = {
+            outOfScope: ownScope.outOfScope,
+            forbidden: [...ownScope.forbidden, ...inheritedScope.forbidden]
+          };
+        } else {
+          scope = partitionByScope(changed, allowed, config.forbidden);
+        }
+        result.inherited = inherited;
         const zcPaths = zcViolations.map((v) => v.path);
         if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length) {
           G.savePartial(root, join(runDir, 'rejected'), entries);
@@ -428,9 +449,11 @@ export function acceptRun({ root, runId, config = {} }) {
     if (mismatched.length) {
       throw new Error(`cannot accept run ${prev.runId}: ambiguous ownership for paths: ${mismatched.join(', ')}`);
     }
-    const scope = partitionByScope(owned, prev.allowed ?? [], config?.forbidden);
+    const inheritedSet = new Set(prev.inherited ?? []);
+    const outOfScope = partitionByScope(owned.filter((p) => !inheritedSet.has(p)), prev.allowed ?? [], config?.forbidden).outOfScope;
+    const forbidden = partitionByScope(owned, ['**'], config?.forbidden).forbidden;
     const notChanged = owned.filter((p) => !(prev.changed ?? []).includes(p));
-    const badPaths = [...new Set([...scope.outOfScope, ...scope.forbidden, ...notChanged])].sort();
+    const badPaths = [...new Set([...outOfScope, ...forbidden, ...notChanged])].sort();
     if (badPaths.length) {
       throw new Error(`cannot accept run ${prev.runId}: paths outside the task scope or not checked as the worker's change: ${badPaths.join(', ')}. Review them, then stage by hand or zc reject.`);
     }

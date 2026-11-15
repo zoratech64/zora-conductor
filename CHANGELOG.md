@@ -19,6 +19,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 ### Fixed
 
 - `scripts/measure.mjs prompt` reports `rulesTruncated: true` again when ECC rule files are left out past `ecc.maxChars`. Since whole-file rule selection it looked for a marker that is no longer written, so it was always `false`.
+- A repair (`zc dispatch --repair`) with narrower `allowed` paths than the run it repairs no longer ends SCOPE_VIOLATION over files that run's worker changed within its scope and the repair left untouched. They are recorded in `result.inherited`, and `zc accept` stages them with the repair's own files. Any file the repair worker changes is still checked against its `allowed`.
 
 ## [0.2.0-alpha.2] - 2026-11-15
 

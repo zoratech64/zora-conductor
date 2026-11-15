@@ -119,6 +119,103 @@ test('repair refuses when the tree no longer matches the run', async () => {
   assert.match(r.nextAction, /no longer matches/);
 });
 
+test('repair with narrower allowed: untouched files from the repaired run are inherited, not out of scope', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'OK');
+  assert.deepEqual(repair.inherited, ['src/a.txt']);
+  assert.deepEqual(repair.outOfScope, []);
+  assert.deepEqual(repair.changed, ['src/a.txt', 'test/b.txt']);
+  assert.ok(repair.changed.includes('src/a.txt'));
+  assert.ok(repair.changed.includes('test/b.txt'));
+});
+
+test('repair that edits an inherited file outside its allowed is a scope violation and the tree is kept', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'src/a.txt': 'v2' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'SCOPE_VIOLATION');
+  assert.deepEqual(repair.outOfScope, ['src/a.txt']);
+  assert.deepEqual(repair.inherited, []);
+  assert.equal(repair.rolledBack, false);
+  assert.equal(readFileSync(join(dir, 'src/a.txt'), 'utf8'), 'v2');
+});
+
+test('repair of a run that did not pass the scope check inherits nothing', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'src/a.txt': 'v2' } });
+  const svTask = task('id: T-sv\nallowed:\n  - test/', 'Fix tests.');
+  const svRun = await dispatch({ root: dir, task: svTask, config, repairOf: first.runId });
+  assert.equal(svRun.status, 'SCOPE_VIOLATION');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/c.txt': 'c' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix again.');
+  const r = await dispatch({ root: dir, task: repairTask, config, repairOf: svRun.runId });
+  assert.equal(r.status, 'SCOPE_VIOLATION');
+  assert.deepEqual(r.outOfScope, ['src/a.txt']);
+  assert.ok(r.outOfScope.includes('src/a.txt'));
+  assert.deepEqual(r.inherited, []);
+});
+
+test('repair does not inherit files the repaired run\'s verify wrote', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [[process.execPath, '-e', 'require("fs").mkdirSync("other",{recursive:true});require("fs").writeFileSync("other/gen.txt","g");process.exit(1)']];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+  assert.deepEqual(first.changed, ['src/a.txt']);
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'SCOPE_VIOLATION');
+  assert.deepEqual(repair.outOfScope, ['other/gen.txt']);
+  assert.deepEqual(repair.inherited, ['src/a.txt']);
+});
+
+test('an inherited path that is forbidden by the current config is still reported', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  config.forbidden = ['src/a.txt'];
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'SCOPE_VIOLATION');
+  assert.ok(repair.forbidden.includes('src/a.txt'));
+});
+
 test('location refusal stops everything: no account rotation', async () => {
   makeHome();
   const { dir, config } = makeRepo();

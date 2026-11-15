@@ -32,6 +32,7 @@ Every run writes `result.json`, each attempt's prompt and raw event stream, and 
 - Only one dispatch per project at a time (lock file, stale locks from dead processes are taken over).
 - A rollback happens only after the tree was verified clean at the start, and only after the partial work is saved. `.zc/` is excluded from rollbacks.
 - In `--repair` mode the baseline is someone's in-progress work, so automatic rollback is switched off and failed attempts hand their work to the next account instead.
+- A repair is scope-checked on its own changes: files the repaired run's worker changed and zc scope-checked (if that run was OK or VERIFY_FAILED; files its verify commands wrote are not included) and that the repair leaves byte-for-byte unchanged are recorded in `result.inherited` and are not checked against the repair task's `allowed` paths. Forbidden paths are always checked. `zc accept` stages inherited files with the repair's own.
 - The worker's report is shown to the manager but never decides a status. Statuses come from the agy result event plus git plus the verify commands.
 - Verification commands are argv arrays; no shell is involved (on Windows `.cmd` launchers go through `cmd.exe` with strict argument checks).
 - A location refusal is terminal for the run. No account is tried afterwards.
