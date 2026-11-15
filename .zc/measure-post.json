@@ -1,0 +1,78 @@
+{
+  "label": "POST-CHANGE prompt measurements (Phase 1)",
+  "method": "node scripts/measure.mjs prompt <same task files>, then node scripts/measure.mjs compare <pre> <post>; pre = .zc/baseline-pre.json",
+  "promptConfigPacks": {
+    "kind": "prompt-size",
+    "generatedAt": "2026-11-15T07:59:21.160Z",
+    "commit": "42a25e36d57e2ca9484c076a3cbe2bee77beab1c",
+    "node": "v24.21.0",
+    "rulePacks": [
+      "common",
+      "typescript"
+    ],
+    "maxChars": 40000,
+    "tasks": [
+      {
+        "file": ".zc/tasks/T-001.md",
+        "promptBytes": 19394,
+        "promptChars": 19388,
+        "eccRulesChars": 12456,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-002.md",
+        "promptBytes": 24579,
+        "promptChars": 24573,
+        "eccRulesChars": 12456,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-003.md",
+        "promptBytes": 17174,
+        "promptChars": 17168,
+        "eccRulesChars": 12456,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      }
+    ]
+  },
+  "promptCommonDart": {
+    "kind": "prompt-size",
+    "generatedAt": "2026-11-15T07:59:21.310Z",
+    "commit": "42a25e36d57e2ca9484c076a3cbe2bee77beab1c",
+    "node": "v24.21.0",
+    "rulePacks": [
+      "common",
+      "dart"
+    ],
+    "maxChars": 40000,
+    "tasks": [
+      {
+        "file": ".zc/tasks/T-001.md",
+        "promptBytes": 35081,
+        "promptChars": 34819,
+        "eccRulesChars": 27887,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-002.md",
+        "promptBytes": 40266,
+        "promptChars": 40004,
+        "eccRulesChars": 27887,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-003.md",
+        "promptBytes": 32861,
+        "promptChars": 32599,
+        "eccRulesChars": 27887,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 ### Added
 
 - `zc accept` stages only the files a verified worker run produced, checking run status, HEAD and recorded contents before staging.
+- `scripts/measure.mjs` gains read-only `runs` to aggregate metrics across recorded runs and `compare` for before/after prompt size comparisons.
 
 ### Fixed
 
