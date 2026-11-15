@@ -1,0 +1,652 @@
+{
+  "label": "Phase 1 run report and prompt comparison (T-015)",
+  "generatedAt": "2026-11-15T11:34:56.391Z",
+  "commit": "b5bd2efb98b0a94d1aa8c8342f6e31c420480621",
+  "method": {
+    "commands": "for k in promptConfigPacks promptCommonDart; do\n  node -e \"const fs=require('fs');for(const [f,o] of [['.zc/baseline-pre.json','pre'],['.zc/measure-post.json','post']])fs.writeFileSync(process.argv[1]+'/'+o+'-'+process.argv[2]+'.json',JSON.stringify(JSON.parse(fs.readFileSync(f,'utf8'))[process.argv[2]]))\" \"$S\" \"$k\"\n  node scripts/measure.mjs compare \"$S/pre-$k.json\" \"$S/post-$k.json\" > \"$S/compare-$k.json\"\ndone\nnode scripts/measure.mjs runs --split 2026-11-15T08:50:17Z > \"$S/runs.json\"\nnode --input-type=module <<'EVIDENCE' > \"$S/evidence.json\"\nimport { readdirSync, readFileSync, existsSync } from 'node:fs';\nimport { join } from 'node:path';\nimport { runsDir } from './src/paths.mjs';\nimport { toplevel } from './src/gitx.mjs';\n\nconst dir = runsDir(toplevel(process.cwd()));\nconst evidence = readdirSync(dir).sort().map(id => {\n  const result = JSON.parse(readFileSync(join(dir, id, 'result.json'), 'utf8'));\n  const promptPath = join(dir, id, 'attempt-1.prompt.txt');\n  const promptText = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : null;\n  const promptFile = promptText !== null;\n  const managerRuleMarker = promptFile && promptText.includes('### common/development-workflow.md');\n  const hasEccRules = Boolean(result.eccRules);\n  const hasVerifyPlan = Boolean(result.verifyPlan);\n  let prompt = 'ambiguous';\n  if (promptFile && managerRuleMarker && !hasEccRules && !hasVerifyPlan) prompt = 'old';\n  else if (promptFile && !managerRuleMarker && hasEccRules && hasVerifyPlan) prompt = 'new';\n  return {\n    runId: id, taskId: result.taskId, status: result.status,\n    repairOf: result.repairOf ?? null, startedAt: result.startedAt,\n    promptFile, managerRuleMarker, hasEccRules, hasVerifyPlan, prompt\n  };\n});\nconsole.log(JSON.stringify(evidence, null, 2));\nEVIDENCE\nnode -e \"const e=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const a=e.filter(x=>x.prompt==='ambiguous');if(a.length){console.error('AMBIGUOUS:',JSON.stringify(a,null,2));process.exit(1)}console.log('classification ok:',e.length,'runs')\" \"$S/evidence.json\""
+  },
+  "compare": {
+    "promptConfigPacks": {
+      "kind": "prompt-compare",
+      "comparable": true,
+      "pre": {
+        "commit": "adafef0d62abd8d5289ef377e5009bfa490699b3",
+        "generatedAt": "2026-11-15T07:20:13.905Z"
+      },
+      "post": {
+        "commit": "42a25e36d57e2ca9484c076a3cbe2bee77beab1c",
+        "generatedAt": "2026-11-15T07:59:21.160Z"
+      },
+      "tasks": [
+        {
+          "file": ".zc/tasks/T-001.md",
+          "preBytes": 27911,
+          "postBytes": 19394,
+          "deltaBytes": -8517,
+          "deltaPct": -30.5,
+          "preRulesChars": 20973,
+          "postRulesChars": 12456
+        },
+        {
+          "file": ".zc/tasks/T-002.md",
+          "preBytes": 33096,
+          "postBytes": 24579,
+          "deltaBytes": -8517,
+          "deltaPct": -25.7,
+          "preRulesChars": 20973,
+          "postRulesChars": 12456
+        },
+        {
+          "file": ".zc/tasks/T-003.md",
+          "preBytes": 25691,
+          "postBytes": 17174,
+          "deltaBytes": -8517,
+          "deltaPct": -33.2,
+          "preRulesChars": 20973,
+          "postRulesChars": 12456
+        }
+      ],
+      "unpaired": []
+    },
+    "promptCommonDart": {
+      "kind": "prompt-compare",
+      "comparable": true,
+      "pre": {
+        "commit": "adafef0d62abd8d5289ef377e5009bfa490699b3",
+        "generatedAt": "2026-11-15T07:20:14.099Z"
+      },
+      "post": {
+        "commit": "42a25e36d57e2ca9484c076a3cbe2bee77beab1c",
+        "generatedAt": "2026-11-15T07:59:21.310Z"
+      },
+      "tasks": [
+        {
+          "file": ".zc/tasks/T-001.md",
+          "preBytes": 43598,
+          "postBytes": 35081,
+          "deltaBytes": -8517,
+          "deltaPct": -19.5,
+          "preRulesChars": 36404,
+          "postRulesChars": 27887
+        },
+        {
+          "file": ".zc/tasks/T-002.md",
+          "preBytes": 48783,
+          "postBytes": 40266,
+          "deltaBytes": -8517,
+          "deltaPct": -17.5,
+          "preRulesChars": 36404,
+          "postRulesChars": 27887
+        },
+        {
+          "file": ".zc/tasks/T-003.md",
+          "preBytes": 41378,
+          "postBytes": 32861,
+          "deltaBytes": -8517,
+          "deltaPct": -20.6,
+          "preRulesChars": 36404,
+          "postRulesChars": 27887
+        }
+      ],
+      "unpaired": []
+    }
+  },
+  "runs": {
+    "kind": "run-report",
+    "generatedAt": "2026-11-15T11:30:50.923Z",
+    "dirs": [
+      "/home/zora-tech/.local/state/zora-conductor/projects/zora-conductor-d6f00b826f/runs"
+    ],
+    "split": "2026-11-15T08:50:17Z",
+    "unreadable": [],
+    "groups": {
+      "before": {
+        "runs": 12,
+        "statuses": {
+          "OK": 10,
+          "VERIFY_FAILED": 2
+        },
+        "repairRuns": 2,
+        "attempts": 12,
+        "metrics": {
+          "promptBytes": {
+            "n": 10,
+            "missing": 2,
+            "median": 26519,
+            "mean": 26511.6,
+            "min": 24244,
+            "max": 28225
+          },
+          "turns": {
+            "n": 10,
+            "missing": 2,
+            "median": 1,
+            "mean": 1,
+            "min": 1,
+            "max": 1
+          },
+          "toolsTotal": {
+            "n": 10,
+            "missing": 2,
+            "median": 24.5,
+            "mean": 24.7,
+            "min": 3,
+            "max": 53
+          },
+          "toolsFailed": {
+            "n": 10,
+            "missing": 2,
+            "median": 0,
+            "mean": 1.4,
+            "min": 0,
+            "max": 8
+          },
+          "workerInputTokens": {
+            "n": 10,
+            "missing": 2,
+            "median": 107200,
+            "mean": 105176.9,
+            "min": 23402,
+            "max": 176871
+          },
+          "workerOutputTokens": {
+            "n": 10,
+            "missing": 2,
+            "median": 40491.5,
+            "mean": 36586.1,
+            "min": 1659,
+            "max": 67446
+          },
+          "workerTotalTokens": {
+            "n": 10,
+            "missing": 2,
+            "median": 151327.5,
+            "mean": 141763,
+            "min": 25061,
+            "max": 219158
+          },
+          "attemptDurationMs": {
+            "n": 12,
+            "missing": 0,
+            "median": 365711,
+            "mean": 299827.6,
+            "min": 23048,
+            "max": 465347
+          },
+          "attemptsPerRun": {
+            "n": 12,
+            "missing": 0,
+            "median": 1,
+            "mean": 1,
+            "min": 1,
+            "max": 1
+          },
+          "verifyDurationMs": {
+            "n": 10,
+            "missing": 2,
+            "median": 8758,
+            "mean": 10162.4,
+            "min": 6513,
+            "max": 18179
+          }
+        }
+      },
+      "after": {
+        "runs": 5,
+        "statuses": {
+          "OK": 3,
+          "VERIFY_FAILED": 1,
+          "SCOPE_VIOLATION": 1
+        },
+        "repairRuns": 2,
+        "attempts": 5,
+        "metrics": {
+          "promptBytes": {
+            "n": 5,
+            "missing": 0,
+            "median": 19030,
+            "mean": 19608.2,
+            "min": 16262,
+            "max": 26862
+          },
+          "turns": {
+            "n": 5,
+            "missing": 0,
+            "median": 1,
+            "mean": 1,
+            "min": 1,
+            "max": 1
+          },
+          "toolsTotal": {
+            "n": 5,
+            "missing": 0,
+            "median": 11,
+            "mean": 12.2,
+            "min": 6,
+            "max": 22
+          },
+          "toolsFailed": {
+            "n": 5,
+            "missing": 0,
+            "median": 0,
+            "mean": 0,
+            "min": 0,
+            "max": 0
+          },
+          "workerInputTokens": {
+            "n": 5,
+            "missing": 0,
+            "median": 44862,
+            "mean": 55458,
+            "min": 32446,
+            "max": 107499
+          },
+          "workerOutputTokens": {
+            "n": 5,
+            "missing": 0,
+            "median": 9392,
+            "mean": 13809.8,
+            "min": 3182,
+            "max": 41811
+          },
+          "workerTotalTokens": {
+            "n": 5,
+            "missing": 0,
+            "median": 49430,
+            "mean": 69267.8,
+            "min": 35628,
+            "max": 149310
+          },
+          "attemptDurationMs": {
+            "n": 5,
+            "missing": 0,
+            "median": 79336,
+            "mean": 117427.4,
+            "min": 38148,
+            "max": 311233
+          },
+          "attemptsPerRun": {
+            "n": 5,
+            "missing": 0,
+            "median": 1,
+            "mean": 1,
+            "min": 1,
+            "max": 1
+          },
+          "verifyDurationMs": {
+            "n": 4,
+            "missing": 1,
+            "median": 8533.5,
+            "mean": 8391.5,
+            "min": 6594,
+            "max": 9905
+          }
+        }
+      },
+      "undated": {
+        "runs": 0,
+        "statuses": {},
+        "repairRuns": 0,
+        "attempts": 0,
+        "metrics": {
+          "promptBytes": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "turns": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "toolsTotal": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "toolsFailed": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "workerInputTokens": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "workerOutputTokens": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "workerTotalTokens": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "attemptDurationMs": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "attemptsPerRun": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          },
+          "verifyDurationMs": {
+            "n": 0,
+            "missing": 0,
+            "median": null,
+            "mean": null,
+            "min": null,
+            "max": null
+          }
+        }
+      }
+    },
+    "notes": [
+      "promptBytes is prompt size, not token usage.",
+      "worker*Tokens are Gemini worker usage reported by agy; they say nothing about Claude (manager) token use.",
+      "missing counts entries without that field; they are never counted as zero."
+    ]
+  },
+  "splitReason": "2026-11-15T08:50:17Z is when the global zc became a symlink to this repo; earlier runs used an older zc (no eccRules/verifyPlan in result.json, excluded rules present in the prompt).",
+  "promptEvidence": [
+    {
+      "runId": "20261111042732-zamv",
+      "taskId": "T-001",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-11T04:27:32.072Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261111044053-wv13",
+      "taskId": "T-002",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-11T04:40:53.873Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115071339-tkcs",
+      "taskId": "T-003",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:13:39.471Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115072122-77ar",
+      "taskId": "T-004",
+      "status": "VERIFY_FAILED",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:21:22.134Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115072833-5kou",
+      "taskId": "T-004",
+      "status": "OK",
+      "repairOf": "20261115072122-77ar",
+      "startedAt": "2026-11-15T07:28:33.114Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115073147-cbtb",
+      "taskId": "T-005",
+      "status": "VERIFY_FAILED",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:31:47.075Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115073712-shrw",
+      "taskId": "T-005",
+      "status": "OK",
+      "repairOf": "20261115073147-cbtb",
+      "startedAt": "2026-11-15T07:37:12.574Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115073901-1rek",
+      "taskId": "T-006",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:39:01.864Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115074642-b311",
+      "taskId": "T-007",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:46:42.589Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115075111-20o7",
+      "taskId": "T-008",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T07:51:11.200Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115080206-t7me",
+      "taskId": "T-009",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T08:02:06.610Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115083559-v6np",
+      "taskId": "T-010",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T08:35:59.284Z",
+      "promptFile": true,
+      "managerRuleMarker": true,
+      "hasEccRules": false,
+      "hasVerifyPlan": false,
+      "prompt": "old"
+    },
+    {
+      "runId": "20261115090258-3vs3",
+      "taskId": "T-011",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T09:02:58.115Z",
+      "promptFile": true,
+      "managerRuleMarker": false,
+      "hasEccRules": true,
+      "hasVerifyPlan": true,
+      "prompt": "new"
+    },
+    {
+      "runId": "20261115091923-611z",
+      "taskId": "T-012",
+      "status": "OK",
+      "repairOf": null,
+      "startedAt": "2026-11-15T09:19:23.767Z",
+      "promptFile": true,
+      "managerRuleMarker": false,
+      "hasEccRules": true,
+      "hasVerifyPlan": true,
+      "prompt": "new"
+    },
+    {
+      "runId": "20261115105704-594r",
+      "taskId": "T-014",
+      "status": "VERIFY_FAILED",
+      "repairOf": null,
+      "startedAt": "2026-11-15T10:57:04.538Z",
+      "promptFile": true,
+      "managerRuleMarker": false,
+      "hasEccRules": true,
+      "hasVerifyPlan": true,
+      "prompt": "new"
+    },
+    {
+      "runId": "20261115110742-snjr",
+      "taskId": "T-014-r1",
+      "status": "SCOPE_VIOLATION",
+      "repairOf": "20261115105704-594r",
+      "startedAt": "2026-11-15T11:07:42.747Z",
+      "promptFile": true,
+      "managerRuleMarker": false,
+      "hasEccRules": true,
+      "hasVerifyPlan": true,
+      "prompt": "new"
+    },
+    {
+      "runId": "20261115111918-v76s",
+      "taskId": "T-014-r2",
+      "status": "OK",
+      "repairOf": "20261115110742-snjr",
+      "startedAt": "2026-11-15T11:19:18.715Z",
+      "promptFile": true,
+      "managerRuleMarker": false,
+      "hasEccRules": true,
+      "hasVerifyPlan": true,
+      "prompt": "new"
+    }
+  ],
+  "repairs": [
+    {
+      "runId": "20261115072833-5kou",
+      "taskId": "T-004",
+      "repairOf": "20261115072122-77ar",
+      "causeSource": ".zc/tasks/T-004-r1.md — Cause",
+      "causeQuote": "all new tests fail with\n`Error: ECC folder (configured: /tmp/zc-test-ecc-...) is not usable: - skills/ is missing - agents/ is missing - commands/ is missing`\nthrown by `eccRoot` (src/ecc.mjs ~line 228) via `selectEccRules`. `makeTestEcc` (test/prompt-rules.test.mjs line 10) only writes `rules/...` files.",
+      "attribution": "not recorded in result.json"
+    },
+    {
+      "runId": "20261115073712-shrw",
+      "taskId": "T-005",
+      "repairOf": "20261115073147-cbtb",
+      "causeSource": ".zc/tasks/T-005-r1.md — Cause",
+      "causeQuote": "with additive verify, `first.verify[0]` is now the project's passing command (from makeRepo) and the task's FAIL command is the last entry.",
+      "attribution": "not recorded in result.json"
+    },
+    {
+      "runId": "20261115110742-snjr",
+      "taskId": "T-014-r1",
+      "repairOf": "20261115105704-594r",
+      "causeSource": ".zc/tasks/T-014-r1.md — Cause",
+      "causeQuote": "test/prompt-rules.test.mjs:287 asserts that `git status --porcelain` is empty. `makeRepo` (test/helpers.mjs:32-33) writes `.zc/config.json` without committing it, so status is always `?? .zc/`. The failing tail:\n  '?? .zc/' !== ''  at test/prompt-rules.test.mjs:287:10\nThe T-014 contract specified the wrong assertion; your src/ change is correct and stays as is.",
+      "attribution": "not recorded in result.json"
+    },
+    {
+      "runId": "20261115111918-v76s",
+      "taskId": "T-014-r2",
+      "repairOf": "20261115110742-snjr",
+      "causeSource": ".zc/tasks/T-014-r2.md — Why this repair",
+      "causeQuote": "Run 20261115110742-snjr (T-014-r1, repair of 594r) made exactly the planned test fix. It ended SCOPE_VIOLATION because its `allowed` held only the test file, while zc scope-checks every changed path in the tree, including the earlier run's (src/dispatch.mjs:266-288). Verify did not run, and nothing was rolled back (repairs never reset).",
+      "attribution": "not recorded in result.json"
+    }
+  ],
+  "verdict": {
+    "promptSizeReduced": true,
+    "repairRateComparable": false,
+    "repairRateCounts": {
+      "before": {
+        "runs": 12,
+        "repairRuns": 2
+      },
+      "after": {
+        "runs": 5,
+        "repairRuns": 2
+      }
+    },
+    "reasons": [
+      "After the split there are only 3 tasks (T-011, T-012, T-014): too few for a rate.",
+      "Before and after tasks differ in kind and size; no task was run under both prompts.",
+      "T-014-r1 (run 20261115110742-snjr) repaired run 20261115105704-594r, whose npm test failed on a test assertion that `git status --porcelain` is empty. The assertion was written by the worker as the T-014 contract specified. It failed because the test fixture (makeRepo) leaves `.zc/config.json` untracked. The repair changed that assertion and an unused import; the run ended SCOPE_VIOLATION because its `allowed` omitted the three files the earlier run had changed.",
+      "T-014-r2 (run 20261115111918-v76s) repaired run 20261115110742-snjr after a scope mistake in the manager's T-014-r1 repair contract. It made no edits and ended OK.",
+      "result.json records no repair cause, and the task files hold free text only, so repairs cannot be attributed to worker behavior or to the prompt change from the records.",
+      "metrics.turns is 1 in every recorded attempt, so it carries no information."
+    ],
+    "nextMeasurement": "Re-run `node scripts/measure.mjs runs --split 2026-11-15T08:50:17Z` after at least 10 further tasks run on the new prompt, and only then compare repair counts."
+  },
+  "missingEvidence": [
+    "Which zc build ran T-003..T-010: the pre-link global install was replaced on 2026-11-15T08:50:17Z and its version is not recorded.",
+    "Repair causes as structured data: only free text in task files.",
+    "A pre-change run-report: baseline-pre.json has only runInventory.",
+    "Metrics for runs 20261111042732-zamv (T-001) and 20261111044053-wv13 (T-002): recorded before attempt metrics existed.",
+    "Claude (manager) token use: not collected by zc."
+  ]
+}
