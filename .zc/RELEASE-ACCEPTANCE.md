@@ -27,11 +27,11 @@ P0 rule: every P0 hardening item (A2 to A5) is a release blocker until it is on 
 | # | Item | Status | Evidence / gap |
 |---|---|---|---|
 | A1 | Phase 1 tasks T-001 to T-020 committed on `main` | PASS | `.zc/progress.md`; latest `a0d6195`, `14eb14b` |
-| A2 | ZCH-001 post-verify integrity re-check | OPEN (fixed on branch, not on `main`, not independently verified) | `63bc634` on `hardening/zch`; needs A6, then the P0 review |
+| A2 | ZCH-001 post-verify integrity re-check | OPEN (fixed on branch, not on `main`, not independently verified) | `63bc634`; on `integrate/alpha3` (amended by T-021 `0bf2168`); needs `main` and the P0 independent review |
 | A3 | ZCH-011 git metadata integrity, all steps 011-A to 011-E | OPEN | 011-A `8d0bde5` and a 011-B baseline `146553f` on the branch; 011-C to 011-E not started |
 | A4 | ZCH-002 bounded cooldowns | OPEN | not started |
 | A5 | ZCH-003 honest safety documentation (README and ARCHITECTURE state what zc does and does not guarantee) | OPEN | depends on A2 and A3 |
-| A6 | `hardening/zch` integrated into `main`, with the user's approval of merge or rebase | OPEN | branch forked at `adafef0` (alpha.1). `main` is 23 commits ahead of that point. Both sides changed `src/dispatch.mjs` (+73 on the branch, +109 on main), so expect conflicts. The first hardening task should be integration, before any more ZCH work. |
+| A6 | `hardening/zch` integrated into `main`, with the user's approval of merge or rebase | OPEN | branch forked at `adafef0` (alpha.1). `main` is 23 commits ahead of that point. Both sides changed `src/dispatch.mjs` (+73 on the branch, +109 on main), so expect conflicts. The first hardening task should be integration, before any more ZCH work. Update 2026-11-15: merged on `integrate/alpha3` (`edc7223`, user chose merge), reconciled by T-021 (`0bf2168`), suite green; passes when `main` is fast-forwarded. |
 
 ## B. Quality gates (on the exact release commit)
 

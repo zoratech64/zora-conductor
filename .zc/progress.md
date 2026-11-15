@@ -17,3 +17,5 @@ One line per accepted task: date, task id, run id, commit.
 - 2026-11-15 T-018 runs 20261115165835-7ul7 (OK, review found verify-written files inherited) + repair 20261115171413-w1ku (OK): repair scope check covers only the repair's own changes; result.inherited
 - 2026-11-15 T-019 run 20261115180018-qb6o (OK): repair tasks declare cause/causeNote, recorded as result.repairCause; CLI refuses --repair without cause; chained-repair test
 - 2026-11-15 T-020 run 20261115184429-kxny (OK): measure.mjs runs reports repairCauses per group (repair runs by repairCause.kind, unrecorded for none); contract required adding the new note to the pinned notes test
+- 2026-11-15 merge edc7223 (integrate/alpha3): hardening/zch (ZCH-001, ZCH-011A) merged onto Phase 1; conflicts in src/gitx.mjs and docs/ARCHITECTURE.md resolved; 3 known test failures left for T-021
+- 2026-11-15 T-021 run 20261115192833-vqle (OK, commit 0bf2168): verify-written files inside allowed recorded in verifyChanged only (policy a); 4 tests and hardening spec ZCH-001 step 4 amended
