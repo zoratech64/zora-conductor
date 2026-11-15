@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, dispatch } from '../src/dispatch.mjs';
@@ -16,7 +16,7 @@ test('OK run: accepts and stages only recorded paths, leaving unrelated untracke
 
   writeFileSync(join(dir, 'notes.txt'), 'unrelated notes\n');
 
-  const res = acceptRun({ root: dir, runId: run.runId });
+  const res = acceptRun({ root: dir, runId: run.runId, config });
   assert.equal(res.runId, run.runId);
   assert.deepEqual(res.staged, ['README.md', 'src/a.txt']);
   assert.deepEqual(res.leftAlone, ['notes.txt']);
@@ -44,7 +44,7 @@ test('pre-existing staged change stays staged with same content and unstaged mod
   // Unrelated unstaged modification
   writeFileSync(join(dir, 'src', 'keep.txt'), 'manager unstaged change\n');
 
-  const res = acceptRun({ root: dir, runId: run.runId });
+  const res = acceptRun({ root: dir, runId: run.runId, config });
   assert.deepEqual(res.staged, ['src/a.txt']);
   assert.deepEqual(res.leftAlone, ['README.md', 'src/keep.txt']);
 
@@ -65,7 +65,7 @@ test('deletion: a run that deletes a tracked file results in that deletion stage
   const run = await dispatch({ root: dir, task: t, config });
   assert.equal(run.status, 'OK');
 
-  const res = acceptRun({ root: dir, runId: run.runId });
+  const res = acceptRun({ root: dir, runId: run.runId, config });
   assert.deepEqual(res.staged, ['src/keep.txt', 'src/new.txt']);
 
   const cachedNames = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort();
@@ -85,7 +85,7 @@ test('fails closed and stages nothing when run status is VERIFY_FAILED', async (
   const run = await dispatch({ root: dir, task: failing, config });
   assert.equal(run.status, 'VERIFY_FAILED');
 
-  assert.throws(() => acceptRun({ root: dir, runId: run.runId }), /only OK runs/);
+  assert.throws(() => acceptRun({ root: dir, runId: run.runId, config }), /only OK runs/);
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
 });
 
@@ -99,7 +99,7 @@ test('fails closed and stages nothing when an owned file was edited after the ru
 
   writeFileSync(join(dir, 'src', 'a.txt'), 'tampered text\n');
 
-  assert.throws(() => acceptRun({ root: dir, runId: run.runId }), /ambiguous ownership/);
+  assert.throws(() => acceptRun({ root: dir, runId: run.runId, config }), /ambiguous ownership/);
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
 });
 
@@ -115,14 +115,14 @@ test('fails closed and stages nothing when HEAD moved after the run', async () =
   git(dir, 'add', 'other.txt');
   git(dir, 'commit', '-q', '-m', 'unrelated commit');
 
-  assert.throws(() => acceptRun({ root: dir, runId: run.runId }), /HEAD moved/);
+  assert.throws(() => acceptRun({ root: dir, runId: run.runId, config }), /HEAD moved/);
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
 });
 
 test('fails closed and stages nothing when run id is unknown', async () => {
   makeHome();
-  const { dir } = makeRepo();
-  assert.throws(() => acceptRun({ root: dir, runId: 'no-such-run' }), /no run to accept/);
+  const { dir, config } = makeRepo();
+  assert.throws(() => acceptRun({ root: dir, runId: 'no-such-run', config }), /no run to accept/);
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
 });
 
@@ -134,10 +134,93 @@ test('accept without runId accepts the latest run', async () => {
   const run = await dispatch({ root: dir, task: t, config });
   assert.equal(run.status, 'OK');
 
-  const res = acceptRun({ root: dir });
+  const res = acceptRun({ root: dir, config });
   assert.equal(res.runId, run.runId);
   assert.deepEqual(res.staged, ['src/a.txt']);
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), 'src/a.txt');
+});
+
+test('accept refuses run where verify command wrote a file outside allowed', async () => {
+  makeHome();
+  const verifyCmd = [process.execPath, '-e', "require('fs').writeFileSync('dist.txt','x')"];
+  const { dir, config } = makeRepo({ verify: [verifyCmd] });
+  const t = task('id: T-9\nallowed:\n  - src/');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'ok\n' } });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  assert.throws(
+    () => acceptRun({ root: dir, runId: run.runId, config }),
+    (err) => {
+      assert.match(err.message, /paths outside the task scope or not checked as the worker's change/);
+      assert.match(err.message, /dist\.txt/);
+      return true;
+    }
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});
+
+test('accept refuses run record whose workerState contains a path missing from changed', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const t = task('id: T-10\nallowed:\n  - src/');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a\n', 'src/b.txt': 'b\n' } });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  const resultFile = join(run.runDir, 'result.json');
+  const record = JSON.parse(readFileSync(resultFile, 'utf8'));
+  record.changed = ['src/a.txt'];
+  writeFileSync(resultFile, JSON.stringify(record, null, 2));
+
+  assert.throws(
+    () => acceptRun({ root: dir, runId: run.runId, config }),
+    (err) => {
+      assert.match(err.message, /paths outside the task scope or not checked as the worker's change/);
+      assert.match(err.message, /src\/b\.txt/);
+      return true;
+    }
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});
+
+test('staging uses one call: accept of a run with 150 new files stages all 150', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const write = {};
+  for (let i = 0; i < 150; i++) {
+    write[`src/f${String(i).padStart(3, '0')}.txt`] = `file ${i}\n`;
+  }
+  const t = task('id: T-11\nallowed:\n  - src/');
+  addFake('g1', { mode: 'ok', write });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  const res = acceptRun({ root: dir, runId: run.runId, config });
+  assert.equal(res.staged.length, 150);
+  const cached = git(dir, 'diff', '--cached', '--name-only').split('\n').filter(Boolean);
+  assert.equal(cached.length, 150);
+});
+
+test('alreadyStaged lists an unrelated file user staged after the run and stays staged with unchanged content', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const t = task('id: T-12\nallowed:\n  - src/a.txt');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'worker text\n' } });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  writeFileSync(join(dir, 'README.md'), 'user edit to readme\n');
+  git(dir, 'add', 'README.md');
+  const cachedBefore = git(dir, 'diff', '--cached', '--', 'README.md');
+
+  const res = acceptRun({ root: dir, runId: run.runId, config });
+  assert.deepEqual(res.staged, ['src/a.txt']);
+  assert.deepEqual(res.alreadyStaged, ['README.md']);
+  assert.ok(res.leftAlone.includes('README.md'));
+
+  const cachedAfter = git(dir, 'diff', '--cached', '--', 'README.md');
+  assert.equal(cachedAfter, cachedBefore);
 });
 
 test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints staged', async () => {
@@ -163,4 +246,25 @@ test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints 
 
   const cached = git(dir, 'diff', '--cached', '--name-only').trim();
   assert.equal(cached, 'src/a.txt');
+});
+
+test('CLI smoke: accept warns when an unrelated file was already staged', async () => {
+  const home = makeHome();
+  const { dir, config } = makeRepo();
+  const t = task('id: T-13\nallowed:\n  - src/');
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'smoke test\n' } });
+  const run = await dispatch({ root: dir, task: t, config });
+  assert.equal(run.status, 'OK');
+
+  writeFileSync(join(dir, 'extra.txt'), 'extra staged\n');
+  git(dir, 'add', 'extra.txt');
+
+  const binZc = resolve(import.meta.dirname, '..', 'bin', 'zc.mjs');
+  const r = spawnSync(process.execPath, [binZc, 'accept', run.runId], {
+    cwd: dir,
+    env: { ...process.env, ZC_HOME: home },
+    encoding: 'utf8'
+  });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /warning: already staged and not this run's \(a commit would include them\): extra\.txt/);
 });

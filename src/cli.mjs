@@ -340,10 +340,12 @@ export async function main(argv) {
       }
       case 'accept': {
         const opts = parseArgs(rest);
-        const out = acceptRun({ root: projectRoot(opts), runId: opts._[0] });
+        const root = projectRoot(opts);
+        const out = acceptRun({ root, runId: opts._[0], config: loadConfig(root) });
         console.log(`zc: staged ${out.staged.length} file(s) from run ${out.runId}`);
         for (const p of out.staged) console.log(`  ${p}`);
         if (out.leftAlone.length) console.log(`left alone (not this run's): ${out.leftAlone.join(', ')}`);
+        if (out.alreadyStaged?.length) console.log(`warning: already staged and not this run's (a commit would include them): ${out.alreadyStaged.join(', ')}`);
         return 0;
       }
       case 'runs': {

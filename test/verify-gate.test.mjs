@@ -27,6 +27,11 @@ test('effectiveVerify: exact duplicates deduped, keeping first occurrence and ta
   assert.deepEqual(effective, [['cmd1', 'arg'], ['cmd2'], ['cmd3']]);
 });
 
+test('effectiveVerify: [["npm","test"]] and [["npm test"]] are not duplicates and both are kept', () => {
+  const effective = effectiveVerify([['npm', 'test']], [['npm test']]);
+  assert.deepEqual(effective, [['npm', 'test'], ['npm test']]);
+});
+
 test('effectiveVerify: empty or missing task list returns project list as a new array', () => {
   const project = [['npm', 'test']];
   const effectiveEmpty = effectiveVerify(project, []);

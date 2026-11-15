@@ -44,9 +44,9 @@ export const getRun = (root, id) => readJson(join(runsDir(root), id, 'result.jso
  */
 export function effectiveVerify(projectVerify = [], taskVerify = []) {
   const result = [...(projectVerify ?? [])];
-  const seen = new Set(result.map((argv) => argv.join(' ')));
+  const seen = new Set(result.map((argv) => JSON.stringify(argv)));
   for (const cmd of taskVerify ?? []) {
-    const key = cmd.join(' ');
+    const key = JSON.stringify(cmd);
     if (!seen.has(key)) {
       seen.add(key);
       result.push(cmd);
@@ -405,9 +405,9 @@ export function rejectRun({ root, runId, force = false }) {
  * Stage only the files a verified worker run produced: checks that the run succeeded (OK),
  * HEAD has not moved, and all owned files still match the recorded worker state. Leaves
  * unrelated changes alone. Takes the same project lock as dispatch and reject.
- * Returns { runId, staged, leftAlone }.
+ * Returns { runId, staged, leftAlone, alreadyStaged }.
  */
-export function acceptRun({ root, runId }) {
+export function acceptRun({ root, runId, config = {} }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to accept (see `zc runs`)');
   const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}` });
@@ -427,15 +427,25 @@ export function acceptRun({ root, runId }) {
     if (mismatched.length) {
       throw new Error(`cannot accept run ${prev.runId}: ambiguous ownership for paths: ${mismatched.join(', ')}`);
     }
+    const scope = partitionByScope(owned, prev.allowed ?? [], config?.forbidden);
+    const notChanged = owned.filter((p) => !(prev.changed ?? []).includes(p));
+    const badPaths = [...new Set([...scope.outOfScope, ...scope.forbidden, ...notChanged])].sort();
+    if (badPaths.length) {
+      throw new Error(`cannot accept run ${prev.runId}: paths outside the task scope or not checked as the worker's change: ${badPaths.join(', ')}. Review them, then stage by hand or zc reject.`);
+    }
     const ownedSet = new Set(owned);
     const leftAlone = Object.keys(current).filter((p) => !ownedSet.has(p)).sort();
-    for (let i = 0; i < owned.length; i += 100) {
-      const batch = owned.slice(i, i + 100);
-      if (batch.length) {
-        G.git(root, ['--literal-pathspecs', 'add', '-A', '--', ...batch]);
-      }
+    const entries = G.statusEntries(root);
+    const stagedEntries = new Set(
+      entries.filter((e) => e.xy[0] !== ' ' && e.xy[0] !== '?').map((e) => e.path)
+    );
+    const alreadyStaged = leftAlone.filter((p) => stagedEntries.has(p)).sort();
+    if (owned.length) {
+      G.git(root, ['--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+        input: owned.join('\0')
+      });
     }
-    return { runId: prev.runId, staged: owned.sort(), leftAlone };
+    return { runId: prev.runId, staged: owned.sort(), leftAlone, alreadyStaged };
   } finally {
     release();
   }
