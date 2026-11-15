@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, dispatch } from '../src/dispatch.mjs';
+import { toplevel } from '../src/gitx.mjs';
 import { FAIL, addFake, git, makeHome, makeRepo, task } from './helpers.mjs';
 
 test('OK run: accepts and stages only recorded paths, leaving unrelated untracked files alone', async () => {
@@ -230,16 +231,17 @@ test('accept refuses when unrelated tracked file is already staged and leaves in
 test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints staged', async () => {
   const home = makeHome();
   const { dir, config } = makeRepo();
+  const root = toplevel(dir);
   const t = task('id: T-7\nallowed:\n  - src/');
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'smoke test\n' } });
-  const run = await dispatch({ root: dir, task: t, config });
+  const run = await dispatch({ root, task: t, config });
   assert.equal(run.status, 'OK');
 
   writeFileSync(join(dir, 'extra.txt'), 'extra\n');
 
   const binZc = resolve(import.meta.dirname, '..', 'bin', 'zc.mjs');
   const r = spawnSync(process.execPath, [binZc, 'accept', run.runId], {
-    cwd: dir,
+    cwd: root,
     env: { ...process.env, ZC_HOME: home },
     encoding: 'utf8'
   });
@@ -255,9 +257,10 @@ test('CLI smoke: node bin/zc.mjs accept <runId> in temp repo exits 0 and prints 
 test('CLI smoke: accept refuses when an unrelated file was already staged and leaves index unchanged', async () => {
   const home = makeHome();
   const { dir, config } = makeRepo();
+  const root = toplevel(dir);
   const t = task('id: T-13\nallowed:\n  - src/');
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'smoke test\n' } });
-  const run = await dispatch({ root: dir, task: t, config });
+  const run = await dispatch({ root, task: t, config });
   assert.equal(run.status, 'OK');
 
   writeFileSync(join(dir, 'extra.txt'), 'extra staged\n');
@@ -266,7 +269,7 @@ test('CLI smoke: accept refuses when an unrelated file was already staged and le
 
   const binZc = resolve(import.meta.dirname, '..', 'bin', 'zc.mjs');
   const r = spawnSync(process.execPath, [binZc, 'accept', run.runId], {
-    cwd: dir,
+    cwd: root,
     env: { ...process.env, ZC_HOME: home },
     encoding: 'utf8'
   });
