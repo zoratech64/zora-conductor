@@ -7,7 +7,7 @@ import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
 import { attemptMetrics } from './metrics.mjs';
-import { buildPrompt, loadEccAssets, loadEccRules, loadPrefix } from './prompt.mjs';
+import { buildPrompt, loadEccAssets, loadPrefix, selectEccRules } from './prompt.mjs';
 import { parseMinutes } from './limits.mjs';
 import { partitionByScope } from './scope.mjs';
 import { restoreZc, sameState, snapshotZc } from './snapshot.mjs';
@@ -37,15 +37,35 @@ export function listRuns(root, limit = 10) {
 
 export const getRun = (root, id) => readJson(join(runsDir(root), id, 'result.json'), null);
 
+/**
+ * Combine project and task verification commands. Project commands always run first in order;
+ * task commands are appended unless their argv string is already present (deduping exact duplicates).
+ * Returns a new array without mutating inputs.
+ */
+export function effectiveVerify(projectVerify = [], taskVerify = []) {
+  const result = [...(projectVerify ?? [])];
+  const seen = new Set(result.map((argv) => JSON.stringify(argv)));
+  for (const cmd of taskVerify ?? []) {
+    const key = JSON.stringify(cmd);
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(cmd);
+    }
+  }
+  return result;
+}
+
 function taskPrompt({ root, task, config, resumeNote }) {
   const allowed = task.meta.allowed.length ? task.meta.allowed : config.defaults.allowed;
-  const verify = task.meta.verify.length ? task.meta.verify : config.verify;
+  const verify = effectiveVerify(config.verify, task.meta.verify);
+  const { text: eccRulesText, included, excluded, omitted } = selectEccRules(config);
   return {
     allowed,
     verify,
+    eccRules: { included, excluded, omitted },
     prompt: buildPrompt({
       prefix: loadPrefix(root, config),
-      eccRules: loadEccRules(config),
+      eccRules: eccRulesText,
       eccAssets: loadEccAssets(config, task),
       task,
       allowed,
@@ -63,7 +83,7 @@ function taskPrompt({ root, task, config, resumeNote }) {
  * git itself and verification is run here, not reported by the worker.
  */
 export async function dispatch({ root, task, config, repairOf = null, dryRun = false, log = () => {} }) {
-  const { allowed, verify: verifyCmds, prompt: dryPrompt } = taskPrompt({
+  const { allowed, verify: verifyCmds, prompt: dryPrompt, eccRules } = taskPrompt({
     root, task, config, resumeNote: repairOf ? REPAIR_NOTE : ''
   });
   if (dryRun) return { status: 'DRY_RUN', exitCode: 0, taskId: task.meta.id, allowed, prompt: dryPrompt };
@@ -76,6 +96,8 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     startedAt: new Date().toISOString(), account: null, allowed, attempts: [], changed: [],
     outOfScope: [], forbidden: [], verify: [], workerSummary: '', nextAction: '', head: null, branch: null
   };
+  result.eccRules = eccRules;
+  result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
   const finish = (status, exitCode, extra = {}) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
     try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
@@ -284,7 +306,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           });
         }
         return finish('OK', EXIT.OK, {
-          nextAction: 'review `git diff` yourself, run your own checks, then commit; or send a repair / reject.'
+          nextAction: 'review `git diff` yourself, run your own checks, then `zc accept <runId>` (stages only this run\'s files) and commit; or send a repair / reject.'
         });
       }
 
@@ -374,6 +396,60 @@ export function rejectRun({ root, runId, force = false }) {
     G.savePartial(root, join(prev.runDir, 'rejected-manual'), entries);
     const rb = G.rollbackPaths(root, entries, expected);
     return { runId: prev.runId, rolledBack: rb.conflicts.length === 0, restored: rb.restored, conflicts: rb.conflicts };
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Stage only the files a verified worker run produced: checks that the run succeeded (OK),
+ * HEAD has not moved, and all owned files still match the recorded worker state. Leaves
+ * unrelated changes alone; refuses when unrelated paths are staged. Takes the same project
+ * lock as dispatch and reject.
+ * Returns { runId, staged, leftAlone }.
+ */
+export function acceptRun({ root, runId, config = {} }) {
+  const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
+  if (!prev) throw new Error('no run to accept (see `zc runs`)');
+  const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}` });
+  try {
+    if (prev.status !== 'OK') {
+      throw new Error(`cannot accept run ${prev.runId}: status is ${prev.status} (only OK runs can be accepted)`);
+    }
+    if (!prev.workerState) {
+      throw new Error(`run ${prev.runId} has no recorded file contents`);
+    }
+    if (G.head(root) !== prev.head) {
+      throw new Error(`cannot accept run ${prev.runId}: HEAD moved since the run`);
+    }
+    const current = G.dirtyState(root);
+    const owned = Object.keys(prev.workerState);
+    const mismatched = owned.filter((p) => current[p] !== prev.workerState[p]);
+    if (mismatched.length) {
+      throw new Error(`cannot accept run ${prev.runId}: ambiguous ownership for paths: ${mismatched.join(', ')}`);
+    }
+    const scope = partitionByScope(owned, prev.allowed ?? [], config?.forbidden);
+    const notChanged = owned.filter((p) => !(prev.changed ?? []).includes(p));
+    const badPaths = [...new Set([...scope.outOfScope, ...scope.forbidden, ...notChanged])].sort();
+    if (badPaths.length) {
+      throw new Error(`cannot accept run ${prev.runId}: paths outside the task scope or not checked as the worker's change: ${badPaths.join(', ')}. Review them, then stage by hand or zc reject.`);
+    }
+    const ownedSet = new Set(owned);
+    const leftAlone = Object.keys(current).filter((p) => !ownedSet.has(p)).sort();
+    const entries = G.statusEntries(root);
+    const stagedEntries = new Set(
+      entries.filter((e) => e.xy[0] !== ' ' && e.xy[0] !== '?').map((e) => e.path)
+    );
+    const alreadyStaged = leftAlone.filter((p) => stagedEntries.has(p)).sort();
+    if (alreadyStaged.length) {
+      throw new Error(`cannot accept run ${prev.runId}: unrelated paths are already staged and would be committed with it: ${alreadyStaged.join(', ')}. Unstage them (git restore --staged -- <path>) or commit them separately, then run zc accept again.`);
+    }
+    if (owned.length) {
+      G.git(root, ['--literal-pathspecs', 'add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+        input: owned.join('\0')
+      });
+    }
+    return { runId: prev.runId, staged: owned.sort(), leftAlone };
   } finally {
     release();
   }

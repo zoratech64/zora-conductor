@@ -32,9 +32,9 @@ export function pathStates(root, paths) {
 
 export const dirtyState = (root) => pathStates(root, changedPaths(statusEntries(root)));
 
-export function git(root, args, { allowFail = false } = {}) {
+export function git(root, args, { allowFail = false, input } = {}) {
   const result = spawnSync('git', ['-c', 'core.quotepath=off', ...args], {
-    cwd: root, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true
+    cwd: root, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true, input
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFail) {

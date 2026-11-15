@@ -2,8 +2,15 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { eccRoot, formatAssets, loadAssets, readAsset } from './ecc.mjs';
 
-/** ECC rule files that describe Claude Code hooks and sub-agents; they mean nothing to a Gemini worker. */
-const CLAUDE_ONLY = new Set(['hooks.md', 'agents.md']);
+/** Manager/Claude-Code workflow rules (planner agents, GitHub search, commits, model choice) that contradict or do not apply to a worker. */
+export const WORKER_EXCLUDED_RULES = new Set([
+  'hooks.md',
+  'agents.md',
+  'development-workflow.md',
+  'performance.md',
+  'code-review.md',
+  'git-workflow.md'
+]);
 
 /** Older built-in prefixes that `zc init` once copied into projects; they follow the current default. */
 const NO_COMMANDS_LINE = /^- You cannot run shell commands:.*\n/m;
@@ -46,27 +53,70 @@ export function loadPrefix(root, config) {
 
 
 /**
- * ECC rule packs (rules/<pack>/*.md) inlined for the worker. Gemini has no ECC
- * hooks, so the standards travel in the prompt instead. Capped to protect context.
+ * Select worker-relevant ECC rule files under the budget. Whole files are kept or dropped;
+ * files that do not fit are omitted and recorded.
  */
-export function loadEccRules(config) {
-  if (!config.ecc.rulePacks.length) return '';
+export function selectEccRules(config) {
+  if (!config.ecc.rulePacks.length) {
+    return { text: '', included: [], excluded: [], omitted: [] };
+  }
   const base = eccRoot(config).dir;
-  const sections = [];
+  const excluded = [];
+  const candidates = [];
+
   for (const pack of config.ecc.rulePacks) {
     const dir = join(base, 'rules', pack);
     if (!existsSync(dir)) {
-      const have = existsSync(join(base, 'rules')) ? readdirSync(join(base, 'rules'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort().join(', ') : 'none';
+      const have = existsSync(join(base, 'rules'))
+        ? readdirSync(join(base, 'rules'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort().join(', ')
+        : 'none';
       throw new Error(`ECC rule pack "${pack}" (ecc.rulePacks) not found in ${base}/rules. Available: ${have}. Run \`zc ecc install\` for more packs.`);
     }
-    for (const name of readdirSync(dir).filter((n) => n.endsWith('.md') && !CLAUDE_ONLY.has(n)).sort()) {
-      const { body } = readAsset(base, `rules/${pack}/${name}`, { maxBytes: config.ecc.assetMaxBytes });
-      sections.push(`### ${pack}/${name}\n${body}`);
+    for (const name of readdirSync(dir).filter((n) => n.endsWith('.md')).sort()) {
+      const label = `${pack}/${name}`;
+      if (WORKER_EXCLUDED_RULES.has(name)) {
+        excluded.push(label);
+      } else {
+        const { body } = readAsset(base, `rules/${pack}/${name}`, { maxBytes: config.ecc.assetMaxBytes });
+        candidates.push({ label, text: `### ${label}\n${body}` });
+      }
     }
   }
-  const text = sections.join('\n\n');
+
   const max = config.ecc.maxChars;
-  return text.length > max ? `${text.slice(0, max)}\n[... ECC rules truncated at ${max} characters]` : text;
+  const included = [];
+  const includedSections = [];
+  let used = 0;
+  let i = 0;
+
+  for (; i < candidates.length; i++) {
+    const cost = candidates[i].text.length + 2;
+    if (used + cost > max) break;
+    included.push(candidates[i].label);
+    includedSections.push(candidates[i].text);
+    used += cost;
+  }
+
+  if (i === 0 && candidates.length) {
+    throw new Error(`ECC rule ${candidates[0].label} is ${candidates[0].text.length} characters, over ecc.maxChars (${max}); raise ecc.maxChars or remove the pack`);
+  }
+
+  const omitted = candidates.slice(i).map((c) => c.label);
+  let text = includedSections.join('\n\n');
+  if (omitted.length) {
+    text = text
+      ? `${text}\n\n[ECC rules omitted - over ecc.maxChars (${max}): ${omitted.join(', ')}]`
+      : `[ECC rules omitted - over ecc.maxChars (${max}): ${omitted.join(', ')}]`;
+  }
+
+  return { text, included, excluded, omitted };
+}
+
+/**
+ * ECC rule packs (rules/<pack>/*.md) inlined for the worker.
+ */
+export function loadEccRules(config) {
+  return selectEccRules(config).text;
 }
 
 /** Skills, agents and commands the project or this task asks the worker to follow (`ecc: [skill:x, agent:y]`). */

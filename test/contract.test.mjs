@@ -101,3 +101,16 @@ test('skills/orchestrate/SKILL.md retains hard rules, zc doctor, template labels
     assert.ok(skillText.includes(size), `skill should include "${size}"`);
   }
 });
+
+test('orchestrate skill and zc-reviewer agree on review frequency, test verification and staging', () => {
+  const skillPath = resolve(import.meta.dirname, '..', 'skills', 'orchestrate', 'SKILL.md');
+  const reviewerPath = resolve(import.meta.dirname, '..', 'agents', 'zc-reviewer.md');
+  const skillText = readFileSync(skillPath, 'utf8');
+  const reviewerText = readFileSync(reviewerPath, 'utf8');
+
+  assert.ok(!skillText.includes('git add -A'));
+  assert.ok(!reviewerText.includes('git add -A'));
+  assert.ok(skillText.includes('zc accept'));
+  assert.ok(!reviewerText.includes('after every worker result'));
+  assert.ok(!skillText.includes('running tests yourself'));
+});

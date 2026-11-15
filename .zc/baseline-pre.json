@@ -1,0 +1,143 @@
+{
+  "label": "PRE-CHANGE baseline (Phase 1)",
+  "method": {
+    "prompt": "node scripts/measure.mjs prompt <.zc/tasks/T-001.md T-002.md T-003.md> (config packs) and --packs common,dart; dry-run only, no worker dispatched",
+    "runs": "read-only scan of <stateRoot>/projects/*/runs/*/result.json; missing counted per attempt/verify entry, never as zero"
+  },
+  "promptConfigPacks": {
+    "kind": "prompt-size",
+    "generatedAt": "2026-11-15T07:20:13.905Z",
+    "commit": "adafef0d62abd8d5289ef377e5009bfa490699b3",
+    "node": "v24.21.0",
+    "rulePacks": [
+      "common",
+      "typescript"
+    ],
+    "maxChars": 40000,
+    "tasks": [
+      {
+        "file": ".zc/tasks/T-001.md",
+        "promptBytes": 27911,
+        "promptChars": 27905,
+        "eccRulesChars": 20973,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-002.md",
+        "promptBytes": 33096,
+        "promptChars": 33090,
+        "eccRulesChars": 20973,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-003.md",
+        "promptBytes": 25691,
+        "promptChars": 25685,
+        "eccRulesChars": 20973,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      }
+    ]
+  },
+  "promptCommonDart": {
+    "kind": "prompt-size",
+    "generatedAt": "2026-11-15T07:20:14.099Z",
+    "commit": "adafef0d62abd8d5289ef377e5009bfa490699b3",
+    "node": "v24.21.0",
+    "rulePacks": [
+      "common",
+      "dart"
+    ],
+    "maxChars": 40000,
+    "tasks": [
+      {
+        "file": ".zc/tasks/T-001.md",
+        "promptBytes": 43598,
+        "promptChars": 43336,
+        "eccRulesChars": 36404,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-002.md",
+        "promptBytes": 48783,
+        "promptChars": 48521,
+        "eccRulesChars": 36404,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      },
+      {
+        "file": ".zc/tasks/T-003.md",
+        "promptBytes": 41378,
+        "promptChars": 41116,
+        "eccRulesChars": 36404,
+        "eccAssetsChars": 0,
+        "rulesTruncated": false
+      }
+    ]
+  },
+  "runInventory": {
+    "adsense": {
+      "results": 3,
+      "unreadable": 0,
+      "attempts": 2,
+      "missing": {
+        "metrics": 0,
+        "usage": 0,
+        "turns": 0,
+        "durationMs": 0,
+        "verifyDuration": 0
+      }
+    },
+    "afghan-tour": {
+      "results": 3,
+      "unreadable": 0,
+      "attempts": 4,
+      "missing": {
+        "metrics": 4,
+        "usage": 0,
+        "turns": 0,
+        "durationMs": 0,
+        "verifyDuration": 3
+      }
+    },
+    "yara-accounting-app": {
+      "results": 126,
+      "unreadable": 4,
+      "attempts": 124,
+      "missing": {
+        "metrics": 58,
+        "usage": 0,
+        "turns": 0,
+        "durationMs": 0,
+        "verifyDuration": 51
+      }
+    },
+    "zc-validate-IpNX": {
+      "results": 1,
+      "unreadable": 0,
+      "attempts": 1,
+      "missing": {
+        "metrics": 0,
+        "usage": 0,
+        "turns": 0,
+        "durationMs": 0,
+        "verifyDuration": 0
+      }
+    },
+    "zora-conductor": {
+      "results": 3,
+      "unreadable": 0,
+      "attempts": 3,
+      "missing": {
+        "metrics": 2,
+        "usage": 0,
+        "turns": 0,
+        "durationMs": 0,
+        "verifyDuration": 4
+      }
+    }
+  }
+}

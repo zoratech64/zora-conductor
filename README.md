@@ -56,6 +56,7 @@ zc dispatch --task T.md [--json]              run one task on the next ready acc
 zc dispatch --repair <runId> --task fix.md    feedback on top of a worker's uncommitted result
 zc dispatch --task T.md --dry-run             print the exact worker prompt, run nothing
 zc reject [<runId>] [--force]                 discard a result (saved first; only files still exactly as the run left them; takes the project lock)
+zc accept [<runId>]                           stage only a verified run's files (never commits)
 zc ecc install|status|list|search|show        the whole ECC catalog (skills, agents, commands, rules)
 zc runs | status | doctor
 zc account add|login|check|list|reset|remove

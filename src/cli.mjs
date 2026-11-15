@@ -5,7 +5,7 @@ import { checkAccount, findAgy, hasTokenFile, isolationMode, loginAccount } from
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
-import { dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
+import { acceptRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
 import * as G from './gitx.mjs';
 import { configPath, stateRoot } from './paths.mjs';
 import { run } from './proc.mjs';
@@ -22,6 +22,7 @@ Project (run inside the git repo):
   zc dispatch --prompt "<text>" --allow <glob> [--verify "<cmd>"] [--ecc skill:<name>,agent:<name>] [--id <id>]
   zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
+  zc accept [<runId>]                     stage only a verified run's files (never commits)
   zc runs                                 recent runs
   zc status                               accounts, cooldowns, latest run
   zc doctor                               check this machine and project
@@ -335,6 +336,15 @@ export async function main(argv) {
           return 3;
         }
         console.log(`zc: ${out.rolledBack ? `discarded ${out.restored.length} file(s)` : 'nothing discarded'} (run ${out.runId})${out.note ? ` - ${out.note}` : ''}`);
+        return 0;
+      }
+      case 'accept': {
+        const opts = parseArgs(rest);
+        const root = projectRoot(opts);
+        const out = acceptRun({ root, runId: opts._[0], config: loadConfig(root) });
+        console.log(`zc: staged ${out.staged.length} file(s) from run ${out.runId}`);
+        for (const p of out.staged) console.log(`  ${p}`);
+        if (out.leftAlone.length) console.log(`left alone (not this run's): ${out.leftAlone.join(', ')}`);
         return 0;
       }
       case 'runs': {

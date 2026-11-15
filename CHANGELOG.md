@@ -8,10 +8,21 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+### Added
+
+- `zc accept` stages only the files a verified worker run produced, checking run status, HEAD and recorded contents before staging.
+- `scripts/measure.mjs` gains read-only `runs` to aggregate metrics across recorded runs and `compare` for before/after prompt size comparisons.
+
+### Fixed
+
+- A task's `verify:` no longer replaces the project's verify commands; it adds to them (marked **Breaking** for task files that relied on replacing).
+
 ### Changed
 
+- Manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted.
 - The default task template (`zc init`) and the manager skill now use the execution contract.
 - The built-in worker prefix gains contract rules (projects with an unmodified copy of an older prefix pick them up automatically; customised prefixes are left alone).
+- manager skill and zc-reviewer now agree: specialist review is risk-based, zc's verify outcome is the gate, and acceptance uses `zc accept` instead of broad staging.
 
 ## [0.2.0-alpha.1] - 2026-11-08
 

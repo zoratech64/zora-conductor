@@ -39,7 +39,7 @@ Every run writes `result.json`, each attempt's prompt and raw event stream, and 
 ## ECC's two roles
 
 - **Manager side:** installed as a Claude Code plugin. The skill names the ECC agents and skills to use for planning, TDD, review and security.
-- **Worker side:** Gemini does not run ECC hooks, so the chosen rule packs (`rules/common`, `rules/dart`, `rules/typescript`, ...) are read from `ecc.path`, capped at `ecc.maxChars`, and placed in each worker prompt. `zc dispatch --dry-run` shows exactly what a worker will receive.
+- **Worker side:** Gemini does not run ECC hooks, so the chosen rule packs (`rules/common`, `rules/dart`, `rules/typescript`, ...) are read from `ecc.path` (manager-only rule files are left out; whole files are dropped (never cut) past `ecc.maxChars`, and `result.json` records `eccRules` included/excluded/omitted) and placed in each worker prompt. `zc dispatch --dry-run` shows exactly what a worker will receive.
 
 ## State
 
@@ -73,8 +73,10 @@ Commands and agents describe procedures that rely on tools workers do not have (
 - **`.zc/` belongs to the manager.** Rollbacks never touch it. Before each worker run `zc` snapshots it (SHA-256 per file, copies kept in the run folder); afterwards any difference is restored, the worker's version is saved under `zc-violations-<n>/`, and a run that would otherwise have succeeded ends as `SCOPE_VIOLATION`.
 - **Rollback is content-verified.** After the worker exits, `zc` records a fingerprint of every changed path (`workerState` in `result.json`). Rollback and `zc reject` restore a path only if it still has exactly that content; anything else is left alone and reported (`PARTIAL rollback`, exit 3). Results without `workerState` need `--force`. `--force` still saves the current files first.
 - **Staged changes count.** Recorded state includes the git index, so a file you `git add` after a run is no longer "the worker's" and is never discarded by `reject` or a rollback.
+- `zc accept` stages exactly the run's recorded paths after checking status OK, unchanged HEAD and unchanged contents; anything else is left alone; any mismatch stages nothing. It also refuses paths outside the task's `allowed`, forbidden paths, and paths not recorded as the worker's change (e.g. files written by verify commands); staging is a single all-or-nothing git call; it cannot stop edits made by other programs between its check and the stage. It also refuses, staging nothing, when files that are not the run's are already staged, so a following `git commit` contains only the run's files.
+- **Verification is additive.** Project `verify` always runs; task `verify` only adds commands; `result.json` `verifyPlan` lists the effective set.
 - **Protected `.zc/` must be restorable.** If a `.zc/` file is too large to snapshot (2 MB each, 32 MB total), no worker is started; if a worker change there cannot be restored, the run stops as `NEEDS_HUMAN`, never as a successful rollback.
-- **One lock for everything that changes the tree.** `dispatch` and `reject` take the same project lock; it is released on every path, including errors.
+- **One lock for everything that changes the tree.** `dispatch`, `reject` and `accept` take the same project lock; it is released on every path, including errors.
 - **Repair compares contents**, not just file names: the tree must hash identically to the run being repaired.
 - **Durations** (task `minutes`, `--minutes`, `defaults.*Minutes`) must be finite numbers greater than 0 and at most 480; anything else is refused before a timer is armed.
 - **ECC**: one validator (`validateCatalog`) decides what a usable ECC folder is and is used by install, status, doctor and source selection. Installs are staged and swapped atomically and record provenance in `INSTALLED.json` (origin, requested ref, full commit, whether it tracks a moving branch). Assets load by path with a per-file byte limit (`ecc.assetMaxBytes`); the prompt budget (`ecc.assetMaxChars`) includes whole sections only and lists what was left out.
@@ -83,3 +85,10 @@ Commands and agents describe procedures that rely on tools workers do not have (
 - Empty `.zc/` folders are protected like files (deleted ones are recreated, new ones removed and reported). A lookup that meets an install mid-swap waits for it (up to 15 s, `ZC_ECC_WAIT_MS`) and then fails clearly; it never falls back to the bundled rules.
 - The `.zc` folder itself is tracked too: deleting, creating or replacing it (by a file) is detected, undone and reported as a violation. A `.zc` that is a symlink or a file blocks the run before a worker starts.
 - `.zc/` inspection fails closed: only "not there" (`ENOENT`/`ENOTDIR`) counts as missing. Any other error (for example a permission error) stops the run as `NEEDS_HUMAN` before a worker starts, or, after a worker ran, without claiming the folder was checked.
+
+## Measuring efficiency
+
+`node scripts/measure.mjs` provides three read-only subcommands: `prompt` measures prompt and rule sizes for task files; `runs` aggregates metrics across recorded run results; and `compare` computes before-and-after prompt size deltas.
+All commands are strictly read-only and dispatch no worker.
+Missing fields in run records are tracked explicitly as missing rather than treated as zero.
+Worker token and tool metrics reflect Gemini execution reported by `agy`, not Claude (manager) token use.
