@@ -8,6 +8,10 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+### Added
+
+- `zc accept` stages only the files a verified worker run produced, checking run status, HEAD and recorded contents before staging.
+
 ### Fixed
 
 - A task's `verify:` no longer replaces the project's verify commands; it adds to them (marked **Breaking** for task files that relied on replacing).

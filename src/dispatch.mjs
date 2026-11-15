@@ -306,7 +306,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           });
         }
         return finish('OK', EXIT.OK, {
-          nextAction: 'review `git diff` yourself, run your own checks, then commit; or send a repair / reject.'
+          nextAction: 'review `git diff` yourself, run your own checks, then `zc accept <runId>` (stages only this run\'s files) and commit; or send a repair / reject.'
         });
       }
 
@@ -396,6 +396,46 @@ export function rejectRun({ root, runId, force = false }) {
     G.savePartial(root, join(prev.runDir, 'rejected-manual'), entries);
     const rb = G.rollbackPaths(root, entries, expected);
     return { runId: prev.runId, rolledBack: rb.conflicts.length === 0, restored: rb.restored, conflicts: rb.conflicts };
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Stage only the files a verified worker run produced: checks that the run succeeded (OK),
+ * HEAD has not moved, and all owned files still match the recorded worker state. Leaves
+ * unrelated changes alone. Takes the same project lock as dispatch and reject.
+ * Returns { runId, staged, leftAlone }.
+ */
+export function acceptRun({ root, runId }) {
+  const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
+  if (!prev) throw new Error('no run to accept (see `zc runs`)');
+  const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}` });
+  try {
+    if (prev.status !== 'OK') {
+      throw new Error(`cannot accept run ${prev.runId}: status is ${prev.status} (only OK runs can be accepted)`);
+    }
+    if (!prev.workerState) {
+      throw new Error(`run ${prev.runId} has no recorded file contents`);
+    }
+    if (G.head(root) !== prev.head) {
+      throw new Error(`cannot accept run ${prev.runId}: HEAD moved since the run`);
+    }
+    const current = G.dirtyState(root);
+    const owned = Object.keys(prev.workerState);
+    const mismatched = owned.filter((p) => current[p] !== prev.workerState[p]);
+    if (mismatched.length) {
+      throw new Error(`cannot accept run ${prev.runId}: ambiguous ownership for paths: ${mismatched.join(', ')}`);
+    }
+    const ownedSet = new Set(owned);
+    const leftAlone = Object.keys(current).filter((p) => !ownedSet.has(p)).sort();
+    for (let i = 0; i < owned.length; i += 100) {
+      const batch = owned.slice(i, i + 100);
+      if (batch.length) {
+        G.git(root, ['--literal-pathspecs', 'add', '-A', '--', ...batch]);
+      }
+    }
+    return { runId: prev.runId, staged: owned.sort(), leftAlone };
   } finally {
     release();
   }
