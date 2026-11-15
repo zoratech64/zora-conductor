@@ -9,3 +9,4 @@ One line per accepted task: date, task id, run id, commit.
 - 2026-11-15 T-008 run 20261115075111-20o7 (OK): measure.mjs runs/compare report; post-change prompt sizes in .zc/measure-post.json
 - 2026-11-15 T-009 run 20261115080206-t7me (OK): audit fixes - accept scope check, single all-or-nothing git add, alreadyStaged warning, lock message, argv-exact verify dedupe
 - 2026-11-15 T-010 run 20261115083559-v6np (OK): zc accept refuses when unrelated paths are already staged; lock doc covers accept
+- 2026-11-15 T-013 manager edit, no run: resync .zc/MANAGER-RULES.md with orchestrate skill Rules section; drop obsolete Phase 1 user decisions
