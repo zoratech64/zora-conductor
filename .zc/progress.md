@@ -19,3 +19,5 @@ One line per accepted task: date, task id, run id, commit.
 - 2026-11-15 T-020 run 20261115184429-kxny (OK): measure.mjs runs reports repairCauses per group (repair runs by repairCause.kind, unrecorded for none); contract required adding the new note to the pinned notes test
 - 2026-11-15 merge edc7223 (integrate/alpha3): hardening/zch (ZCH-001, ZCH-011A) merged onto Phase 1; conflicts in src/gitx.mjs and docs/ARCHITECTURE.md resolved; 3 known test failures left for T-021
 - 2026-11-15 T-021 run 20261115192833-vqle (OK, commit 0bf2168): verify-written files inside allowed recorded in verifyChanged only (policy a); 4 tests and hardening spec ZCH-001 step 4 amended
+- 2026-11-16 independent review 1 of ZCH-001/011A on integrate/alpha3: FAIL (1 High, 1 Medium, both reproduced; 4 Low)
+- 2026-11-16 T-022 run 20261116020748-ebe8 (OK, commit 7f1018b): verifyChanged by content (preVerifyState), carriedVerify for repairs, accept refuses verify output; review findings 1 and 2 closed

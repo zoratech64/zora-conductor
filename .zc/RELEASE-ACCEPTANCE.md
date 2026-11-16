@@ -27,8 +27,8 @@ P0 rule: every P0 hardening item (A2 to A5) is a release blocker until it is on 
 | # | Item | Status | Evidence / gap |
 |---|---|---|---|
 | A1 | Phase 1 tasks T-001 to T-020 committed on `main` | PASS | `.zc/progress.md`; latest `a0d6195`, `14eb14b` |
-| A2 | ZCH-001 post-verify integrity re-check | OPEN (fixed on branch, not on `main`, not independently verified) | `63bc634`; on `integrate/alpha3` (amended by T-021 `0bf2168`); needs `main` and the P0 independent review |
-| A3 | ZCH-011 git metadata integrity, all steps 011-A to 011-E | OPEN | 011-A `8d0bde5` and a 011-B baseline `146553f` on the branch; 011-C to 011-E not started |
+| A2 | ZCH-001 post-verify integrity re-check | OPEN (fixed on branch, not on `main`, not independently verified) | `63bc634`; on `integrate/alpha3` (amended by T-021 `0bf2168`). Independent review 1 (2026-11-16): FAIL, 1 High + 1 Medium (verify edits to changed or inherited files went unchecked; same-`allowed` repair took over verify output), both reproduced; fixed by T-022 `7f1018b`. Needs independent review 2 and `main` |
+| A3 | ZCH-011 git metadata integrity, all steps 011-A to 011-E | OPEN | 011-A `8d0bde5`. Correction 2026-11-16: `146553f` contains only the ZCH-011B contract, no baseline code, so 011-B to 011-E are not started. Also covers independent review 1 findings 3 (a git timeout or no-hooks-dir failure during dispatch leaves no `result.json`; spec 11.2/A9 expects `NEEDS_HUMAN`) and 5 (the no-hooks directory is shared across projects, spec 11.2 says per project). |
 | A4 | ZCH-002 bounded cooldowns | OPEN | not started |
 | A5 | ZCH-003 honest safety documentation (README and ARCHITECTURE state what zc does and does not guarantee) | OPEN | depends on A2 and A3 |
 | A6 | `hardening/zch` integrated into `main`, with the user's approval of merge or rebase | OPEN | branch forked at `adafef0` (alpha.1). `main` is 23 commits ahead of that point. Both sides changed `src/dispatch.mjs` (+73 on the branch, +109 on main), so expect conflicts. The first hardening task should be integration, before any more ZCH work. Update 2026-11-15: merged on `integrate/alpha3` (`edc7223`, user chose merge), reconciled by T-021 (`0bf2168`), suite green; passes when `main` is fast-forwarded. |
@@ -69,6 +69,8 @@ P0 rule: every P0 hardening item (A2 to A5) is a release blocker until it is on 
 - All of `docs/RELEASING.md` Gate 1 (`v0.2.0`): clean-machine Flutter and NestJS runs, same-tag plugin and CLI install, project-local CLI, monorepos, update and rollback, real-machine Windows test.
 - Gate 1 account policy (multi-account off by default, no automatic switching) conflicts with the current automatic failover described in README. This is a product decision for the Gate 1 milestone.
 - Hardening appendix items: unpinned ECC install default, `DENIED` vs `.zc/` precedence, `allowed: ['**']`, Windows `resolveSpawn` quoting test.
+- Independent review 1 finding 4 (Low): the ECC installer (`src/ecc.mjs`) runs git directly, without the hardened `git()`. It runs in a temp folder, outside the dispatch threat model.
+- Independent review 1 finding 6 (Low): small 011-A deviations: `.git` pointer and worktree files stored as text, not bytes; no `identity: 'path-only'` marker; no test for a symlinked git directory (A5).
 - Phase 1 re-measurement (D3), once 10 or more post-split runs exist. The discrepancy investigation (D2) is not deferred.
 
 No other item enters this release. Unrelated improvements found along the way go here with one line.
@@ -87,3 +89,4 @@ No other item enters this release. Unrelated improvements found along the way go
 ## Change log
 
 - 2026-11-15: drafted. The user approved target `v0.2.0-alpha.3` = Phase 1 (T-001 to T-020) + all hardening P0; P1/P2 and Gate 1 deferred. User requirements added: the 7/7 vs 12/5 discrepancy is a blocking investigation (D2, split from the deferred re-measurement D3); P0 items block until on `main` and independently verified; CI, independent review, tag protection, changelog, version bump and README are not waivable; no commit without approval; manager/worker rules and one-worker execution unchanged; no scope expansion. The user approved the checklist and the D3 deferral.
+- 2026-11-16: A2 and A3 evidence updated after independent review 1; A3 now also covers review findings 3 and 5; findings 4 and 6 added to section E. Approved by the user.
