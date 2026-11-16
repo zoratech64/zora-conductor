@@ -144,6 +144,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     let inheritable = false;
     let baseline = null;
     let prevChanged = new Set();
+    let prevVerify = new Set();
     if (repairOf) {
       const prev = getRun(root, repairOf);
       if (!prev) return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: `unknown run "${repairOf}" (see \`zc runs\`).` });
@@ -162,6 +163,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       inheritable = prev.status === 'OK' || prev.status === 'VERIFY_FAILED';
       baseline = prev.workerState;
       prevChanged = new Set(prev.changed ?? []);
+      prevVerify = new Set([...(prev.verifyChanged ?? []), ...(prev.carriedVerify ?? [])]);
       resetAllowed = false; // the baseline is reviewed-in-progress work; never wipe it automatically
       resumeNote = REPAIR_NOTE;
     } else if (dirty.length) {
@@ -284,7 +286,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       if (succeeded) {
         attempt.outcome = 'ok';
         const entries = G.statusEntries(root);
-        const changed = G.changedPaths(entries);
+        let changed = G.changedPaths(entries);
         Object.assign(result, { account: account.id, changed, workerSummary: p.response.slice(0, 2000) || '(the worker wrote no report)' });
         if (!changed.length && p.permissionAsks.length) {
           result.denied = p.denied;
@@ -333,6 +335,17 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
               : 'the worker edited files outside its allowed paths and the tree was left as-is. Review with `git status`, then `zc reject`.'
           });
         }
+        result.preVerifyState = workerState;
+        if (repairOf) {
+          const carried = changed.filter((p) => prevVerify.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
+          if (carried.length) {
+            result.carriedVerify = carried;
+            const carriedSet = new Set(carried);
+            changed = changed.filter((p) => !carriedSet.has(p));
+            result.changed = changed;
+            result.inherited = result.inherited.filter((p) => !carriedSet.has(p));
+          }
+        }
         const vStarted = Date.now();
         result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
         result.verifyDurationMs = Date.now() - vStarted;
@@ -370,7 +383,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         }
 
         const postEntries = G.statusEntries(root);
-        const verifyChanged = G.changedPaths(postEntries).filter((p) => !changed.includes(p));
+        const postState = G.dirtyState(root);
+        const allKeys = new Set([...Object.keys(workerState), ...Object.keys(postState)]);
+        const verifyChanged = [...allKeys].filter((p) => workerState[p] !== postState[p]).sort();
         const vScope = partitionByScope(verifyChanged, allowed, config.forbidden);
         const vZcPaths = verifyZc.map((v) => v.path);
 
@@ -526,7 +541,8 @@ export function acceptRun({ root, runId, config = {} }) {
     const outOfScope = partitionByScope(owned.filter((p) => !inheritedSet.has(p)), prev.allowed ?? [], config?.forbidden).outOfScope;
     const forbidden = partitionByScope(owned, ['**'], config?.forbidden).forbidden;
     const notChanged = owned.filter((p) => !(prev.changed ?? []).includes(p));
-    const badPaths = [...new Set([...outOfScope, ...forbidden, ...notChanged])].sort();
+    const verifyPaths = [...(prev.verifyChanged ?? []), ...(prev.carriedVerify ?? [])];
+    const badPaths = [...new Set([...outOfScope, ...forbidden, ...notChanged, ...verifyPaths])].sort();
     if (badPaths.length) {
       throw new Error(`cannot accept run ${prev.runId}: paths outside the task scope or not checked as the worker's change: ${badPaths.join(', ')}. Review them, then stage by hand or zc reject.`);
     }

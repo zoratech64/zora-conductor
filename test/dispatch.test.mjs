@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import * as accounts from '../src/accounts.mjs';
 import { main } from '../src/cli.mjs';
-import { dispatch, listRuns, rejectRun } from '../src/dispatch.mjs';
+import { acceptRun, dispatch, listRuns, rejectRun } from '../src/dispatch.mjs';
 import { statusEntries } from '../src/gitx.mjs';
 import { FAIL, addFake, fakeEcc, calls, git, lastPrompt, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
 
@@ -521,4 +521,72 @@ test('metrics: records attempt metrics and verification duration', async () => {
 
   const persisted = JSON.parse(readFileSync(join(r.runDir, 'result.json'), 'utf8'));
   assert.deepEqual(persisted.attempts[0].metrics, m);
+});
+
+test("repair: verify rewriting an inherited file outside the repair's allowed -> SCOPE_VIOLATION", async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [FAIL];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'test/b.txt': 't' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - test/', 'Fix tests.');
+  repairTask.meta.verify = [[process.execPath, '-e', 'require("fs").writeFileSync("src/a.txt","EVIL")']];
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'SCOPE_VIOLATION');
+  assert.equal(repair.phase, 'verify');
+  assert.deepEqual(repair.outOfScope, ['src/a.txt']);
+  assert.deepEqual(repair.verifyChanged, ['src/a.txt']);
+  assert.equal(repair.rolledBack, false);
+});
+
+test("repair with the same allowed does not take over the previous run's verify output", async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [[process.execPath, '-e', 'require("fs").writeFileSync("src/gen.txt","g");process.exit(1)']];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+  assert.deepEqual(first.verifyChanged, ['src/gen.txt']);
+
+  setScenario(g1, { mode: 'ok', write: { 'src/b.txt': 'b' } });
+  const repairTask = task('id: T-repair\nallowed:\n  - src/', 'Fix it.');
+  const repair = await dispatch({ root: dir, task: repairTask, config, repairOf: first.runId });
+  assert.equal(repair.status, 'OK');
+  assert.deepEqual(repair.changed, ['src/a.txt', 'src/b.txt']);
+  assert.deepEqual(repair.inherited, ['src/a.txt']);
+  assert.deepEqual(repair.carriedVerify, ['src/gen.txt']);
+
+  assert.throws(
+    () => acceptRun({ root: dir, runId: repair.runId, config }),
+    /src\/gen\.txt/
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});
+
+test('chained repair: carried verify output stays carried', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'v1' } });
+  const failing = task('id: T-first\nallowed:\n  - src/', 'First attempt.');
+  failing.meta.verify = [[process.execPath, '-e', 'require("fs").writeFileSync("src/gen.txt","g");process.exit(1)']];
+  const first = await dispatch({ root: dir, task: failing, config });
+  assert.equal(first.status, 'VERIFY_FAILED');
+
+  setScenario(g1, { mode: 'ok', write: { 'src/b.txt': 'b' } });
+  const repairTaskB = task('id: T-repair-b\nallowed:\n  - src/', 'Repair B.');
+  const b = await dispatch({ root: dir, task: repairTaskB, config, repairOf: first.runId });
+  assert.equal(b.status, 'OK');
+  assert.deepEqual(b.carriedVerify, ['src/gen.txt']);
+
+  setScenario(g1, { mode: 'ok', write: { 'src/c.txt': 'c' } });
+  const repairTaskC = task('id: T-repair-c\nallowed:\n  - src/', 'Repair C.');
+  const c = await dispatch({ root: dir, task: repairTaskC, config, repairOf: b.runId });
+  assert.equal(c.status, 'OK');
+  assert.deepEqual(c.carriedVerify, ['src/gen.txt']);
+  assert.ok(!c.changed.includes('src/gen.txt'));
 });

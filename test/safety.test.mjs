@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { dispatch, rejectRun } from '../src/dispatch.mjs';
+import { acceptRun, dispatch, rejectRun } from '../src/dispatch.mjs';
 import { acquireLock } from '../src/fsx.mjs';
 import { dirtyState, rollbackPaths, statusEntries } from '../src/gitx.mjs';
 import { parseMinutes } from '../src/limits.mjs';
@@ -432,4 +432,39 @@ test('post-verify: verify overwrites .zc/config.json and exits 1 -> SCOPE_VIOLAT
   assert.equal(r.status, 'SCOPE_VIOLATION');
   assert.notEqual(r.status, 'VERIFY_FAILED');
   assert.equal(readFileSync(join(dir, '.zc/config.json'), 'utf8'), original);
+});
+
+test("post-verify: verify rewrites the worker's own in-scope file -> OK, in verifyChanged, accept refuses", async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('src/a.txt', 'verify');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  assert.deepEqual(r.verifyChanged, ['src/a.txt']);
+  assert.deepEqual(r.changed, ['src/a.txt']);
+  assert.ok(Object.keys(r.preVerifyState).includes('src/a.txt'));
+  assert.throws(
+    () => acceptRun({ root: dir, runId: r.runId, config }),
+    (err) => {
+      assert.match(err.message, /not checked as the worker's change/);
+      assert.match(err.message, /src\/a\.txt/);
+      return true;
+    }
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});
+
+test('post-verify: verify deletes a file the worker created -> listed in verifyChanged', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a', 'src/b.txt': 'b' } });
+  const t = scoped();
+  const script = "require('fs').unlinkSync('src/b.txt');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  assert.deepEqual(r.verifyChanged, ['src/b.txt']);
 });
