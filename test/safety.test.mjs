@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, dispatch, rejectRun } from '../src/dispatch.mjs';
 import { acquireLock } from '../src/fsx.mjs';
@@ -499,4 +500,52 @@ test('accept refuses when an accepted file changes after the run (late write)', 
     }
   );
   assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});
+
+test('post-verify: a write after the post-verify snapshot cannot be absorbed into result.workerState', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX git wrapper');
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const bin = mkdtempSync(join(tmpdir(), 'zc-gitwrap-'));
+  const marker = join(bin, 'verify-ran');
+  const done = join(bin, 'late-written');
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+  // After verify has run, the first `git ls-files -s` (the last read of the post-verify snapshot) is
+  // followed by one write to the accepted file, so the tree changes exactly after that snapshot.
+  const wrapper = [
+    `#!${process.execPath}`,
+    "const fs = require('fs');",
+    "const r = require('child_process').spawnSync(process.env.ZC_T_REAL_GIT, process.argv.slice(2), { stdio: 'inherit' });",
+    "const a = process.argv;",
+    "if (a.includes('ls-files') && a.includes('-s') && fs.existsSync(process.env.ZC_T_MARKER) && !fs.existsSync(process.env.ZC_T_DONE)) {",
+    "  fs.writeFileSync(process.env.ZC_T_DONE, '1');",
+    "  fs.writeFileSync(process.env.ZC_T_LATE, 'late');",
+    '}',
+    'process.exit(r.status ?? 1);',
+    ''
+  ].join('\n');
+  writeFileSync(join(bin, 'git'), wrapper);
+  chmodSync(join(bin, 'git'), 0o755);
+  const savedPath = process.env.PATH;
+  Object.assign(process.env, {
+    PATH: `${bin}${delimiter}${process.env.PATH}`,
+    ZC_T_REAL_GIT: realGit, ZC_T_MARKER: marker, ZC_T_DONE: done, ZC_T_LATE: join(dir, 'src/a.txt')
+  });
+  try {
+    const tk = scoped();
+    tk.meta.verify = [[process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, '1')`]];
+    const r = await dispatch({ root: dir, task: tk, config });
+    assert.equal(r.status, 'OK');
+    assert.ok(existsSync(done), 'the late write must have happened');
+    assert.equal(readFileSync(join(dir, 'src/a.txt'), 'utf8'), 'late');
+    assert.throws(
+      () => acceptRun({ root: dir, runId: r.runId, config }),
+      (err) => { assert.match(err.message, /ambiguous ownership/); return true; }
+    );
+    assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+  } finally {
+    process.env.PATH = savedPath;
+    for (const k of ['ZC_T_REAL_GIT', 'ZC_T_MARKER', 'ZC_T_DONE', 'ZC_T_LATE']) delete process.env[k];
+  }
 });
