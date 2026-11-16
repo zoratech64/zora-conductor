@@ -11,7 +11,7 @@ import { parseMinutes } from '../src/limits.mjs';
 import { lockFile } from '../src/paths.mjs';
 import { restoreZc, snapshotZc } from '../src/snapshot.mjs';
 import { parseTask } from '../src/task.mjs';
-import { FAIL, addFake, git, makeHome, makeRepo, task } from './helpers.mjs';
+import { FAIL, addFake, calls, git, makeHome, makeRepo, task } from './helpers.mjs';
 
 const scoped = (extra = '') => task(`id: T-1\nallowed:\n  - src/\n${extra}`);
 
@@ -548,4 +548,54 @@ test('post-verify: a write after the post-verify snapshot cannot be absorbed int
     process.env.PATH = savedPath;
     for (const k of ['ZC_T_REAL_GIT', 'ZC_T_MARKER', 'ZC_T_DONE', 'ZC_T_LATE']) delete process.env[k];
   }
+});
+
+test('repair refuses when the tree changed after the run (late write)', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  writeFileSync(join(dir, 'src/a.txt'), 'late');
+  const feedbackTask = task('id: T-repair\nallowed:\n  - src/', 'Feedback: please fix.');
+  const r2 = await dispatch({ root: dir, task: feedbackTask, config, repairOf: r.runId });
+  assert.equal(r2.status, 'NEEDS_HUMAN');
+  assert.match(r2.nextAction, /no longer matches/);
+  assert.equal(calls(g1), 1);
+});
+
+test('reject refuses a late write without force', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  writeFileSync(join(dir, 'src/a.txt'), 'late');
+  assert.throws(
+    () => rejectRun({ root: dir, runId: r.runId }),
+    (err) => {
+      assert.match(err.message, /not exactly run/);
+      assert.match(err.message, /src\/a\.txt/);
+      return true;
+    }
+  );
+  assert.equal(readFileSync(join(dir, 'src/a.txt'), 'utf8'), 'late');
+  rejectRun({ root: dir, runId: r.runId, force: true });
+  assert.equal(statusEntries(dir).length, 0);
+  assert.ok(!existsSync(join(dir, 'src/a.txt')));
+});
+
+test('VERIFY_FAILED records the checked post-verify state', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('src/gen.txt', 'gen'); process.exit(1);";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'VERIFY_FAILED');
+  assert.deepEqual(r.verifyChanged, ['src/gen.txt']);
+  assert.deepEqual(Object.keys(r.workerState).sort(), ['src/a.txt', 'src/gen.txt']);
 });
