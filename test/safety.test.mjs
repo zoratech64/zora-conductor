@@ -468,3 +468,35 @@ test('post-verify: verify deletes a file the worker created -> listed in verifyC
   assert.equal(r.status, 'OK');
   assert.deepEqual(r.verifyChanged, ['src/b.txt']);
 });
+
+test('post-verify: result.workerState is the checked post-verify state', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const script = "require('fs').writeFileSync('src/gen.txt', 'gen');";
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  assert.deepEqual(r.verifyChanged, ['src/gen.txt']);
+  assert.deepEqual(Object.keys(r.workerState).sort(), ['src/a.txt', 'src/gen.txt']);
+});
+
+test('accept refuses when an accepted file changes after the run (late write)', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const t = scoped();
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'OK');
+  writeFileSync(join(dir, 'src/a.txt'), 'late');
+  assert.throws(
+    () => acceptRun({ root: dir, runId: r.runId, config }),
+    (err) => {
+      assert.match(err.message, /ambiguous ownership/);
+      assert.match(err.message, /src\/a\.txt/);
+      return true;
+    }
+  );
+  assert.equal(git(dir, 'diff', '--cached', '--name-only').trim(), '');
+});

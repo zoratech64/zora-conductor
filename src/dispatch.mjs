@@ -101,9 +101,13 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   };
   result.eccRules = eccRules;
   result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
-  const finish = (status, exitCode, extra = {}) => {
+  const finish = (status, exitCode, extra = {}, checkedState) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
-    try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
+    if (checkedState !== undefined) {
+      result.workerState = checkedState;
+    } else {
+      try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
+    }
     writeJsonAtomic(join(runDir, 'result.json'), result);
     return result;
   };
@@ -411,11 +415,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         if (result.verify.some((v) => !v.ok)) {
           return finish('VERIFY_FAILED', EXIT.FAILED, {
             nextAction: 'the changes stay in the working tree. Read the failing tail, then send a fix with `zc dispatch --repair <runId>` or discard with `zc reject`.'
-          });
+          }, postState);
         }
         return finish('OK', EXIT.OK, {
           nextAction: 'review `git diff` yourself, run your own checks, then `zc accept <runId>` (stages only this run\'s files) and commit; or send a repair / reject.'
-        });
+        }, postState);
       }
 
       const errorText = [p.error, ...p.softErrors, r.error, r.stderr.slice(-2000)].filter(Boolean).join('\n');
