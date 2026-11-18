@@ -156,10 +156,14 @@ test('D10: a linked worktree: shared hooks are detect-only, a rewritten .git poi
   mkdirSync(join(wt, '.zc'), { recursive: true });
   writeFileSync(join(wt, '.zc/config.json'), readFileSync(join(main, '.zc/config.json')));
   const pointer = readFileSync(join(wt, '.git'), 'utf8');
-  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a', '.git': 'gitdir: /nonexistent/decoy\n' } });
-  const r1 = await dispatch({ root: wt, task: scoped(), config });
-  assert.equal(r1.status, 'SCOPE_VIOLATION');
-  assert.equal(readFileSync(join(wt, '.git'), 'utf8'), pointer);
+  // Windows hides the worktree .git file, so a worker cannot open it for writing: skip the pointer half there.
+  const rewritePointer = process.platform !== 'win32';
+  const g1 = addFake('g1', { mode: 'ok', write: rewritePointer ? { 'src/a.txt': 'a', '.git': 'gitdir: /nonexistent/decoy\n' } : { 'src/a.txt': 'a' } });
+  if (rewritePointer) {
+    const r1 = await dispatch({ root: wt, task: scoped(), config });
+    assert.equal(r1.status, 'SCOPE_VIOLATION');
+    assert.equal(readFileSync(join(wt, '.git'), 'utf8'), pointer);
+  }
 
   setScenario(g1, { mode: 'ok', write: { 'src/b.txt': 'b' } });
   const shared = join(main, '.git', 'hooks', 'pre-commit');
