@@ -1246,7 +1246,8 @@ function hardlinkCase(t, { name, baseBody, baseMode, victimBody, victimMode, cha
     const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
     assert.equal(readFileSync(victim, 'utf8'), victimBody);
-    assert.equal(lstatSync(victim).mode & 0o777, victimMode);
+    // Windows has no permission bits to compare
+    if (process.platform !== 'win32') assert.equal(lstatSync(victim).mode & 0o777, victimMode);
     const hit = entries.find((e) => e.area === 'hooks' && e.path.endsWith('pre-commit'));
     assert.ok(hit, `entry expected (${change})`);
     assert.equal(hit.change, change);
