@@ -610,7 +610,7 @@ export function checkMetaFiles(root, layout, baseline, { saveDir } = {}) {
       }
     }
 
-    return entries;
+    console.error("ZCDBG", JSON.stringify(entries.filter((e)=>!e.restored))); return entries;
   } catch (err) {
     entries.push({
       area: 'git',
@@ -620,6 +620,6 @@ export function checkMetaFiles(root, layout, baseline, { saveDir } = {}) {
       restored: false,
       detail: err?.message ?? String(err)
     });
-    return entries;
+    console.error("ZCDBG-catch", JSON.stringify(entries)); return entries;
   }
 }
