@@ -19,16 +19,6 @@ export function toReportPath(root, targetPath) {
   return fullTarget;
 }
 
-// Windows CI temp dirs come as 8.3 short names (RUNNER~1) while git reports the long form.
-function sameWindowsTarget(a, b) {
-  if (process.platform !== 'win32') return false;
-  try {
-    return realpathSync.native(a).toLowerCase() === realpathSync.native(b).toLowerCase();
-  } catch {
-    return false;
-  }
-}
-
 export function gitLayout(root) {
   let out;
   try {
@@ -48,7 +38,7 @@ export function gitLayout(root) {
   const gitDir = resolve(lines[1]);
   const commonDir = resolve(root, lines[2]);
 
-  if (!samePath(workTree, root) && !sameWindowsTarget(workTree, root)) {
+  if (!samePath(workTree, root)) {
     throw new Error(`git layout: toplevel "${workTree}" does not match root "${root}"`);
   }
 
