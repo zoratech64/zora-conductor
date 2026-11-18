@@ -21,12 +21,15 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { loadConfig } from '../src/config.mjs';
 import { dispatch } from '../src/dispatch.mjs';
+import { parseFlags } from '../src/gitmeta-flags.mjs';
 import {
+  checkFlags,
   checkIdentity,
   checkMetaFiles,
   checkMetaInert,
   checkOrigins,
   evidencePath,
+  flagsBaseline,
   gitLayout,
   GitMetaError,
   isPrivate,
@@ -1358,4 +1361,113 @@ test('A12: a git failure after the worker (no-hooks dir unusable) ends NEEDS_HUM
   assert.ok(existsSync(join(r.runDir, 'result.json')));
   assert.ok(!('workerState' in JSON.parse(readFileSync(join(r.runDir, 'result.json'), 'utf8'))), 'no git state recorded');
   assert.ok(home);
+});
+
+const paths = (dir) => statusEntries(dir).map((e) => e.path);
+
+test('C1: a skip-worktree or assume-unchanged flag added during the phase is cleared and the edit shows', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const base = flagsBaseline(dir);
+  writeFileSync(join(dir, 'README.md'), 'edited\n');
+  writeFileSync(join(dir, 'src', 'keep.txt'), 'edited too\n');
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  git(dir, 'update-index', '--assume-unchanged', 'src/keep.txt');
+  assert.deepEqual(paths(dir), [], 'the setup hides both edits');
+  const out = checkFlags(dir, base);
+  assert.deepEqual(out.map((e) => [e.path, e.change, e.restored]).sort(),
+    [['README.md', 'flag-added', true], ['src/keep.txt', 'flag-added', true]]);
+  assert.deepEqual(paths(dir).sort(), ['README.md', 'src/keep.txt']);
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'edited\n');
+});
+
+test('C2: a baseline user flag removed during the phase is set again, content untouched', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, 'README.md'), 'my local edit\n');
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  const base = flagsBaseline(dir);
+  git(dir, 'update-index', '--no-skip-worktree', 'README.md');
+  assert.deepEqual(paths(dir), ['README.md'], 'without the flag the edit looks like a change');
+  const out = checkFlags(dir, base);
+  assert.deepEqual(out.map((e) => [e.path, e.change, e.restored]), [['README.md', 'flag-removed', true]]);
+  assert.deepEqual(paths(dir), []);
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'my local edit\n');
+});
+
+test('C3: changed content of a baseline-flagged file is restored and the changed copy is saved', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, 'README.md'), 'mine\n');
+  git(dir, 'update-index', '--assume-unchanged', 'README.md');
+  const base = flagsBaseline(dir);
+  writeFileSync(join(dir, 'README.md'), 'worker was here\n');
+  const saveDir = mkdtempSync(join(tmpdir(), 'save-c3-'));
+  const out = checkFlags(dir, base, { saveDir });
+  assert.deepEqual(out.map((e) => [e.path, e.change, e.restorable, e.restored]), [['README.md', 'modified', true, true]]);
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'mine\n');
+  assert.equal(readFileSync(join(saveDir, 'README.md'), 'utf8'), 'worker was here\n');
+});
+
+test('C4: untouched pre-existing flags give no entries and change nothing', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, 'README.md'), 'mine\n');
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  git(dir, 'update-index', '--assume-unchanged', 'src/keep.txt');
+  const before = git(dir, 'ls-files', '-v');
+  const base = flagsBaseline(dir);
+  assert.deepEqual(checkFlags(dir, base), []);
+  assert.equal(git(dir, 'ls-files', '-v'), before);
+  assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'mine\n');
+});
+
+test('C5: unparsable ls-files output and an over-cap flagged file fail closed', () => {
+  assert.throws(() => parseFlags('garbage-without-tag\0'), GitMetaError);
+  assert.deepEqual([...parseFlags('H a\0h b\0S c\0s d\0').assume].sort(), ['b', 'd']);
+  assert.deepEqual([...parseFlags('H a\0h b\0S c\0s d\0').skip].sort(), ['c', 'd']);
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, 'README.md'), 'x'.repeat(100));
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  assert.throws(() => flagsBaseline(dir, { maxFileBytes: 10 }), GitMetaError);
+});
+
+test('C6: a symlinked flagged path is never written through', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  const base = flagsBaseline(dir);
+  const outside = mkdtempSync(join(tmpdir(), 'zc-out-c6-'));
+  const victim = join(outside, 'victim');
+  writeFileSync(victim, 'PRECIOUS');
+  rmSync(join(dir, 'README.md'));
+  try {
+    symlinkSync(victim, join(dir, 'README.md'));
+  } catch (err) {
+    t.skip(`symlink creation failed: ${err.message}`);
+    return;
+  }
+  const out = checkFlags(dir, base, { saveDir: mkdtempSync(join(tmpdir(), 'save-c6-')) });
+  assert.equal(out.find((e) => e.change === 'modified').restored, false);
+  assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS');
+});
+
+test('C7: a flagged file that grows past the cap is reported, not read or restored', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  git(dir, 'update-index', '--skip-worktree', 'README.md');
+  const base = flagsBaseline(dir);
+  writeFileSync(join(dir, 'README.md'), Buffer.alloc(2 * 1024 * 1024 + 1, 'x'));
+  const out = checkFlags(dir, base);
+  assert.deepEqual(out.map((e) => [e.path, e.restorable, e.restored]), [['README.md', false, false]]);
+  assert.match(out[0].detail, /exceeds/);
+});
+
+test('C8: a huge flagged file is rejected from its size before it is read', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, 'README.md'), Buffer.alloc(2 * 1024 * 1024 + 1, 'x'));
+  git(dir, 'update-index', '--assume-unchanged', 'README.md');
+  assert.throws(() => flagsBaseline(dir), /exceeds maxFileBytes/);
 });
