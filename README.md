@@ -96,15 +96,29 @@ Done when: POST /auth/reset returns 200 with valid email, tests pass.
 
 - The tree must be clean (or exactly match a prior run when using `--repair`) before a worker starts.
 - A task without `allowed` paths is refused. After the worker finishes, `zc` reads the changed files from git: anything outside `allowed`, or any secret-like path (`.env`, keys, `.git/`), rejects the result and rolls it back. The project's own `.zc/` folder is snapshotted before every worker run; any change a worker makes there is undone, kept as evidence in the run folder, and fails the run as `SCOPE_VIOLATION`.
-- Workers are launched with file-edit permission only by default, which should keep them from running git or shell commands. If one does move HEAD or the branch anyway, `zc` stops and touches nothing.
+- Workers are launched with file-edit permission only by default, which is a usability control, not a security boundary: it depends on `agy` honouring it. If a worker moves HEAD or the branch anyway, `zc` stops with `NEEDS_HUMAN` and does not roll anything back. Before that check it has already repaired `.zc/` and any hooks, config or index flags the worker changed.
 - `zc` is a guard rail, not a sandbox. A worker runs as you, and the scope check only sees files inside the repository. Do not point it at untrusted code on a machine that holds secrets you care about; use a disposable clone or container for that.
 - Verification commands run in `zc` as argv arrays, never through a shell. The worker's own report is never treated as proof.
 - Rollbacks only happen when the tree was verified clean beforehand, and the partial work is saved under the run folder first. `.zc/` is never rolled back.
+- `zc` also checks git metadata (hooks, config, ignore and attribute files, index flags, refs, the `.git` pointer) before and after the worker and after verify; see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#git-metadata-gate-v020-alpha3). Changes it can repair are undone and reported; anything else stops the run for a human.
 - Region/location refusals stop the whole run; `zc` never rotates accounts to get around them, and never patches the `agy` binary.
+
+### What zc does and does not guarantee
+
+zc has six layers, from weakest to strongest:
+
+1. **Prompt level.** The task, `allowed` and `forbidden` lists and the execution contract in the worker prompt are advice. A model can ignore them.
+2. **Tool permission.** `worker.permissions` limits the worker's tools while it runs. zc does not enforce it; it depends on `agy`.
+3. **Git-based repository enforcement.** After the worker and again after verify, zc compares the repository with what it recorded: file contents, `.zc/`, HEAD and branch, scope, and git metadata. Changes it can undo safely are undone and saved; a run with such changes never ends `OK`. This covers effects inside the work tree and the git directories only.
+4. **Process isolation.** The worker is a separate `agy` process with a time limit, killed as a tree on timeout, and one project lock. It runs as you, with your environment. A verify command also runs as you.
+5. **OS isolation.** None. zc is a guard rail, not a sandbox. Code run by verify can read your files, environment and network.
+6. **Credential isolation.** Each worker account has its own profile folder outside the repository. This depends on the `agy` version.
+
+So zc guarantees that no change a worker or verify command makes inside the repository can reach `OK` without passing the scope and integrity checks, and that what it catches is saved and, where safe, undone. It guarantees nothing about effects outside the repository, about global git config, about a process left running after its phase, or about a swap of a path between a check and the write (the checks are not race-free). Use a disposable user, container or machine for untrusted repositories.
 
 ## What is and is not verified
 
-Verified here (Linux, 99 automated tests plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, content-verified rollback and reject, atomic ECC install, ECC catalog validation, ECC rule injection, plugin manifest validation.
+Verified here (Linux, the automated test suite plus an end-to-end CLI run): account pool and sticky selection, quota/auth/license/location/server handling, partial-work save and rollback, scope and forbidden-path rejection, verify and repair flow, timeout kill, HEAD-moved detection, content-verified rollback and reject, atomic ECC install, ECC catalog validation, ECC rule injection, plugin manifest validation.
 
 **Not verified yet, because it needs real accounts and machines:**
 
@@ -112,6 +126,8 @@ Verified here (Linux, 99 automated tests plus an end-to-end CLI run): account po
 2. Account isolation on your Ubuntu machine ([docs/ACCOUNTS.md](docs/ACCOUNTS.md)).
 3. Windows. The code paths for `.cmd` launchers, `taskkill` and `%LOCALAPPDATA%` are written but untested; CI runs the suite on `windows-latest`.
 4. Loading the plugin in a live Claude Code session (the manifest validates; the skill's behaviour in a real session has not been exercised).
+
+Known limits of the git metadata checks (details in [CHANGELOG.md](CHANGELOG.md#unreleased)): they are not race-free, including an evidence-copy race on flagged files that can copy a swapped-in symlink target's content into the run folder; a chmod on an `assume-unchanged` or `skip-worktree` file is not detected; flagged files over 2 MB (8 MB in total) stop a dispatch; shared hooks of a linked worktree, changed refs and a replaced git directory are reported, not repaired.
 
 Other limits: only the `agy` adapter exists (a plain Gemini CLI adapter is the natural next one); workers run strictly serially; Flutter code generation (`build_runner`) must be run by the manager between tasks because workers cannot run commands by default.
 

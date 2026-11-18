@@ -10,14 +10,32 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ### Added
 
+- Git metadata integrity (hardening ZCH-011). `zc` resolves the repository's git directories once per dispatch and pins and hardens every git call it makes (no fsmonitor, an empty per-project hooks directory, no external diff or text conversion, timeouts on inert calls). Before the worker it records hooks, config files and includes, `info/*` files, effective config, refs and the `skip-worktree`/`assume-unchanged` flags (with copies of flagged files); after the worker and after verify it repairs what it safely can and ends the run `SCOPE_VIOLATION` (`gitMeta` entries, metadata paths in `forbidden`), or `NEEDS_HUMAN` with `gitMetaUnrestored: true` when it cannot (changed refs, shared hooks of a linked worktree, a replaced git directory). Hard-linked and symlink-crossing targets are never written in place.
+- `zc ack <runId>` records that you checked the git metadata a `gitMetaUnrestored` run listed. Until then the next dispatch (including `--repair`) ends `NEEDS_HUMAN` before any worker starts, and `zc reject` refuses that run without `--force`. `zc reject` also refuses, even with `--force`, when the repository's git layout no longer matches the run's record.
+- `defaults.maxCooldownMinutes` (default 1440, 1 to 10080) caps every account cooldown. `attempts[].cooldownSource` records `hint` or `default`.
+- README section "What zc does and does not guarantee" lists the six safety layers.
 - `scripts/measure.mjs compare --key <name>` compares one named prompt-size section of combined measurement files such as `.zc/baseline-pre.json`. Without `--key`, a combined file is still rejected, and the error now names the sections it holds.
 - Repair tasks declare why the repair is needed: `cause: worker|contract|environment|verify` and an optional one-line `causeNote:` in front matter. They are recorded in `result.json` as `repairCause`. `zc dispatch --repair` refuses a task without a valid `cause`.
 - `scripts/measure.mjs runs` reports `repairCauses` per group: repair runs counted by `repairCause.kind` (`worker`, `contract`, `environment`, `verify`), with repair runs that have no recorded cause counted as `unrecorded`.
 
 ### Changed
 
+- A change to any `.gitignore` or `.gitattributes` is in scope only if its exact path is listed in `allowed`; after a rollback `zc` reports paths the rollback made visible (`revealedAfterRollback`) and treats the rollback as incomplete.
+- Reset hints in quota messages are believed only if they are absolute times with a timezone or relative times, and lie at most `defaults.maxCooldownMinutes` ahead; anything else falls back to the default cooldown. A weekly reset hint is therefore capped at 24 hours by default. **Behavioural change:** a git call that times out or a hooks directory that cannot be prepared during a dispatch now ends the run `NEEDS_HUMAN` with a `result.json` instead of throwing.
+- The no-hooks directory is per project (`<state>/projects/<project>/no-hooks`), not shared across projects.
+- Decision (alpha.3): automatic switching to the next account stays as it is in this pre-release; whether it is removed is a Gate 1 product decision.
 - Worker prompts always keep the ECC `security.md` and `testing.md` rule files: past `ecc.maxChars`, other rule files are dropped first, and if those two files alone do not fit, `zc dispatch` (and `zc doctor`) report an error instead of leaving them out.
 - After the verify commands run, zc repeats the `.zc/`, HEAD/branch and scope checks. A verify command that changes files outside the task's `allowed` paths (or `.zc/`) now ends the run `SCOPE_VIOLATION` (`phase: "verify"`) instead of `OK` or `VERIFY_FAILED`; one that moves HEAD ends `NEEDS_HUMAN`. Files verify writes inside `allowed` are listed in `result.verifyChanged` only: they are not the worker's change, a repair does not inherit them, and `zc accept` refuses the run while they are present. Verify changes are found by comparing file contents before and after verify, so an edit to a file the worker already changed or inherited is caught and scope-checked, and `zc accept` refuses any run whose verify changed files (`verifyChanged`) or that carries an earlier run's verify output (`carriedVerify`). The run records the file state that was checked, so a file changed after the check (for example by a process a verify command left running) makes `zc accept` refuse the run. The accept guidance also asks the manager to confirm that no accepted file shows in the unstaged `git diff` before committing.
+
+### Known limitations
+
+- The git metadata checks are lstat-then-write, not race-free. A process that swaps a path for a symlink or hard link between the check and the write can redirect it. This includes the evidence copy of a flagged file, which can follow a symlink swapped in at the last moment and copy that file's content into the run folder (a read, not a write outside the run folder). Evidence copies have no size cap.
+- Index-flag protection compares file content only. A mode change (chmod) on an `assume-unchanged` or `skip-worktree` file is neither detected nor restored. A flagged file over 2 MB, or flagged files over 8 MB in total, stop a dispatch before the worker starts (fail closed). After a phase, `checkFlags` applies only the 2 MB per-file limit, with no 8 MB total.
+- The git metadata walk reads and hashes names and content through a symlinked ancestor of a hooks directory (a read, not a write or delete); restores never follow it.
+- Linked-worktree shared hooks, changed refs and a replaced git directory are detect-only (`NEEDS_HUMAN`). Hooks files that are hard-linked (more than one link) are never restored in place.
+- If the worker process itself fails to start or throws, no `result.json` is written, so git metadata it changed is not flagged for the next dispatch.
+- Every dispatch, accept and reject reads all runs' `result.json` files to find a pending git metadata run; very large run stores make that slower.
+- Global and system git config, submodule metadata and effects outside the repository are not protected (see `docs/ARCHITECTURE.md`).
 
 ### Fixed
 

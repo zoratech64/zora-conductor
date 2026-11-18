@@ -12,7 +12,8 @@
 guard      git repo, has a commit, tree clean (or equals the --repair run), task has allowed paths, lock taken
 loop       pick account (sticky, else least recently used among ready + not cooling)
            run agy with the prompt on stdin; time limit enforced by zc (process tree killed)
-           HEAD/branch changed?            → NEEDS_HUMAN, nothing touched
+           git metadata gate (hooks, config, flags, refs) → repaired = SCOPE_VIOLATION; not repairable = NEEDS_HUMAN
+           .zc/ restored; HEAD/branch changed?  → NEEDS_HUMAN, no rollback (.zc/ and git metadata were already repaired)
            success?                        → changed files from git status
                 no change                  → NO_CHANGES
                 outside allowed/forbidden  → SCOPE_VIOLATION (saved, rolled back)

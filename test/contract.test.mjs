@@ -114,3 +114,12 @@ test('orchestrate skill and zc-reviewer agree on review frequency, test verifica
   assert.ok(!reviewerText.includes('after every worker result'));
   assert.ok(!skillText.includes('running tests yourself'));
 });
+
+test('README states what zc does and does not guarantee', () => {
+  const readme = readFileSync(resolve(import.meta.dirname, '..', 'README.md'), 'utf8');
+  assert.ok(readme.includes('### What zc does and does not guarantee'));
+  assert.ok(!readme.includes('should keep them from running'));
+  for (const layer of ['Prompt level', 'Tool permission', 'Git-based repository enforcement', 'Process isolation', 'OS isolation', 'Credential isolation']) {
+    assert.ok(readme.includes(layer), layer);
+  }
+});
