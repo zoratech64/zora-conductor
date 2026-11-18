@@ -4,6 +4,8 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,11 +17,26 @@ import {
   writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { loadConfig } from '../src/config.mjs';
 import { dispatch } from '../src/dispatch.mjs';
-import { checkIdentity, gitLayout, overwriteText, restoreIdentity, samePath } from '../src/gitmeta.mjs';
+import {
+  checkIdentity,
+  checkMetaFiles,
+  checkMetaInert,
+  checkOrigins,
+  evidencePath,
+  gitLayout,
+  GitMetaError,
+  isPrivate,
+  metaBaseline,
+  overwriteText,
+  parseConfigList,
+  refsListing,
+  restoreIdentity,
+  samePath
+} from '../src/gitmeta.mjs';
 import {
   branch,
   configList,
@@ -347,5 +364,942 @@ test('A9: inert git call times out when encountering a blocking fifo', (t) => {
   } finally {
     if (prev !== undefined) process.env.ZC_GIT_INERT_TIMEOUT_MS = prev;
     else delete process.env.ZC_GIT_INERT_TIMEOUT_MS;
+  }
+});
+
+test('B1: hooks added, modified and removed are detected and restored with evidence', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const hooksDir = join(dir, '.git', 'hooks');
+  mkdirSync(hooksDir, { recursive: true });
+  const preCommitPath = join(hooksDir, 'pre-commit');
+  const prePushPath = join(hooksDir, 'pre-push');
+  const postCheckoutPath = join(hooksDir, 'post-checkout');
+  const baseContent = '#!/bin/sh\nexit 0\n';
+  writeFileSync(preCommitPath, baseContent);
+  writeFileSync(prePushPath, baseContent);
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    writeFileSync(preCommitPath, '#!/bin/sh\nexit 1\n');
+    writeFileSync(postCheckoutPath, '#!/bin/sh\necho new\n');
+    rmSync(prePushPath);
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 3);
+    const mod = entries.find((e) => e.change === 'modified' && e.area === 'hooks');
+    const add = entries.find((e) => e.change === 'added' && e.area === 'hooks');
+    const rem = entries.find((e) => e.change === 'removed' && e.area === 'hooks');
+
+    assert.ok(mod, 'must have modified hooks entry');
+    assert.ok(add, 'must have added hooks entry');
+    assert.ok(rem, 'must have removed hooks entry');
+
+    assert.equal(mod.restored, true);
+    assert.equal(add.restored, true);
+    assert.equal(rem.restored, true);
+
+    assert.equal(readFileSync(preCommitPath, 'utf8'), baseContent);
+    assert.equal(readFileSync(prePushPath, 'utf8'), baseContent);
+    assert.equal(existsSync(postCheckoutPath), false);
+
+    const evPreCommit = join(saveDir, '.git', 'hooks', 'pre-commit');
+    const evPostCheckout = join(saveDir, '.git', 'hooks', 'post-checkout');
+    assert.ok(existsSync(evPreCommit), 'evidence must hold modified pre-commit');
+    assert.ok(existsSync(evPostCheckout), 'evidence must hold added post-checkout');
+    assert.equal(readFileSync(evPreCommit, 'utf8'), '#!/bin/sh\nexit 1\n');
+    assert.equal(readFileSync(evPostCheckout, 'utf8'), '#!/bin/sh\necho new\n');
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B2: hook mode change is detected and restored on POSIX', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('no exec bits on win32');
+    return;
+  }
+  makeHome();
+  const { dir } = makeRepo();
+  const hooksDir = join(dir, '.git', 'hooks');
+  mkdirSync(hooksDir, { recursive: true });
+  const hookPath = join(hooksDir, 'pre-commit');
+  writeFileSync(hookPath, '#!/bin/sh\nexit 0\n');
+  chmodSync(hookPath, 0o644);
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    chmodSync(hookPath, 0o755);
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].area, 'hooks');
+    assert.equal(entries[0].change, 'mode');
+    assert.equal(entries[0].restorable, true);
+    assert.equal(entries[0].restored, true);
+
+    const nowMode = lstatSync(hookPath).mode & 0o777;
+    assert.equal(nowMode, 0o644);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B3: core.hooksPath pointing to ignored in-tree directory is checked and restored', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, '.gitignore'), '.hooks/\n');
+  git(dir, 'add', '.gitignore');
+  git(dir, 'commit', '-q', '-m', 'ignore .hooks');
+  git(dir, 'config', 'core.hooksPath', '.hooks');
+  mkdirSync(join(dir, '.hooks'), { recursive: true });
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const expectedHooks = resolve(dir, git(dir, 'rev-parse', '--git-path', 'hooks').trim());
+    assert.ok(samePath(baseline.paths.hooksDir, expectedHooks));
+
+    const hookPath = join(dir, '.hooks', 'pre-commit');
+    writeFileSync(hookPath, '#!/bin/sh\nexit 0\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].area, 'hooks');
+    assert.equal(entries[0].change, 'added');
+    assert.equal(entries[0].restored, true);
+    assert.equal(existsSync(hookPath), false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B4: core.hooksPath change in config is caught as config change and baseline hooks path keeps being checked', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const extDir = mkdtempSync(join(tmpdir(), 'zc-b4-ext-'));
+    git(dir, 'config', 'core.hooksPath', extDir.replace(/\\/g, '/'));
+    const plantedHook = join(dir, '.git', 'hooks', 'pre-commit');
+    mkdirSync(dirname(plantedHook), { recursive: true });
+    writeFileSync(plantedHook, '#!/bin/sh\nexit 0\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    const cfgEntry = entries.find((e) => e.area === 'config' && e.change === 'modified');
+    const hookEntry = entries.find((e) => e.area === 'hooks' && e.change === 'added');
+
+    assert.ok(cfgEntry, 'must report config modified entry');
+    assert.ok(hookEntry, 'must report hooks added entry');
+    assert.equal(cfgEntry.restored, true);
+    assert.equal(hookEntry.restored, true);
+
+    const configBaseFile = baseline.files.find((f) => samePath(f.path, join(dir, '.git', 'config')));
+    assert.equal(
+      Buffer.compare(readFileSync(join(dir, '.git', 'config')), configBaseFile.bytes),
+      0
+    );
+    assert.equal(existsSync(plantedHook), false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B5: alias appended to .git/config is restored byte for byte', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const cfgPath = join(dir, '.git', 'config');
+    const origBytes = readFileSync(cfgPath);
+    writeFileSync(cfgPath, Buffer.concat([origBytes, Buffer.from('[alias]\n\tst = !echo pwned\n')]));
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].area, 'config');
+    assert.equal(entries[0].change, 'modified');
+    assert.equal(entries[0].restored, true);
+
+    const restoredBytes = readFileSync(cfgPath);
+    assert.equal(Buffer.compare(restoredBytes, origBytes), 0);
+
+    const inert = checkMetaInert(dir, layout, baseline);
+    assert.deepEqual(inert, []);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B6: baseline include file inside work tree hidden by gitignore is detected and restored', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, '.gitignore'), 'local.cfg\n');
+  git(dir, 'add', '.gitignore');
+  git(dir, 'commit', '-q', '-m', 'ignore local.cfg');
+
+  const localCfgPath = join(dir, 'local.cfg');
+  writeFileSync(localCfgPath, '[user]\n\tname = Base\n');
+  git(dir, 'config', 'include.path', '../local.cfg');
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const rec = baseline.files.find((f) => samePath(f.path, localCfgPath));
+    assert.ok(rec, 'baseline files must contain record for local.cfg');
+    assert.equal(rec.private, true);
+
+    writeFileSync(localCfgPath, '[user]\n\tname = Modified\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].path, 'local.cfg');
+    assert.equal(entries[0].restored, true);
+
+    const inert = checkMetaInert(dir, layout, baseline);
+    assert.deepEqual(inert, []);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B7: dangling baseline include target created outside private area is detected by checkMetaInert', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const tmpOutside = mkdtempSync(join(tmpdir(), 'zc-b7-ext-'));
+  const laterPath = join(tmpOutside, 'later.cfg');
+  git(dir, 'config', 'include.path', laterPath.replace(/\\/g, '/'));
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    writeFileSync(laterPath, '[core]\n\tfsmonitor = x\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+    assert.deepEqual(entries, []);
+
+    const inert = checkMetaInert(dir, layout, baseline);
+    assert.equal(inert.length, 1);
+    assert.equal(inert[0].area, 'config-effective');
+    assert.equal(inert[0].restorable, false);
+    assert.equal(existsSync(laterPath), true);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B8: info/exclude modified and info/attributes added are restored', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const attrPath = join(dir, '.git', 'info', 'attributes');
+  if (existsSync(attrPath)) {
+    rmSync(attrPath);
+  }
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const excludePath = join(dir, '.git', 'info', 'exclude');
+    writeFileSync(excludePath, Buffer.concat([readFileSync(excludePath), Buffer.from('\n# appended line\n')]));
+    writeFileSync(attrPath, '* text=auto\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    const modEntry = entries.find((e) => e.path.endsWith('exclude') && e.change === 'modified');
+    const addEntry = entries.find((e) => e.path.endsWith('attributes') && e.change === 'added');
+
+    assert.ok(modEntry, 'exclude modified entry must exist');
+    assert.ok(addEntry, 'attributes added entry must exist');
+    assert.equal(modEntry.restored, true);
+    assert.equal(addEntry.restored, true);
+    assert.equal(existsSync(attrPath), false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B9: branch and tag creation detected as refs change and remotes/pack-refs ignored', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    git(dir, 'branch', 'b9');
+    git(dir, 'tag', 't9');
+
+    const inert = checkMetaInert(dir, layout, baseline);
+    const b9Entry = inert.find((e) => e.path === 'refs/heads/b9' && e.change === 'added');
+    const t9Entry = inert.find((e) => e.path === 'refs/tags/t9' && e.change === 'added');
+
+    assert.ok(b9Entry, 'refs/heads/b9 added entry must exist');
+    assert.ok(t9Entry, 'refs/tags/t9 added entry must exist');
+    assert.equal(b9Entry.restorable, false);
+    assert.equal(t9Entry.restorable, false);
+
+    assert.ok(git(dir, 'rev-parse', '--verify', 'refs/heads/b9').trim());
+    assert.ok(git(dir, 'rev-parse', '--verify', 'refs/tags/t9').trim());
+
+    const baseline2 = metaBaseline(dir, layout);
+    git(dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const inert2 = checkMetaInert(dir, layout, baseline2);
+    assert.deepEqual(inert2, []);
+
+    const baseline3 = metaBaseline(dir, layout);
+    git(dir, 'pack-refs', '--all');
+    const inert3 = checkMetaInert(dir, layout, baseline3);
+    assert.deepEqual(inert3, []);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B10: fail-closed errors at baseline and unreadable hooks dir after phase', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const hooksDir = join(dir, '.git', 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+    const bigHookPath = join(hooksDir, 'big-hook');
+    writeFileSync(bigHookPath, Buffer.alloc(3 * 1024 * 1024, 0x61));
+    assert.throws(
+      () => metaBaseline(dir, layout),
+      (err) => err.code === 'ZC_GIT_META' && /maxFileBytes/.test(err.message)
+    );
+    rmSync(bigHookPath, { force: true });
+
+    const hookLink = join(hooksDir, 'link');
+    let symlinkCreated = false;
+    try {
+      symlinkSync(join(dir, 'README.md'), hookLink);
+      symlinkCreated = true;
+    } catch (err) {
+      t.diagnostic(`symlink creation skipped: ${err.message}`);
+    }
+    if (symlinkCreated) {
+      assert.throws(
+        () => metaBaseline(dir, layout),
+        (err) => err.code === 'ZC_GIT_META' && /symlink/.test(err.message)
+      );
+      rmSync(hookLink, { force: true });
+    }
+
+    assert.throws(
+      () => checkOrigins([{ scope: 'local', origin: 'blob:abc', key: 'a.b', value: 'c' }]),
+      (err) => err.code === 'ZC_GIT_META' && /git metadata:/.test(err.message)
+    );
+
+    assert.throws(
+      () => parseConfigList('a\0b\0'),
+      (err) => err.code === 'ZC_GIT_META' && /git metadata:/.test(err.message)
+    );
+
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      const baseline = metaBaseline(dir, layout);
+      chmodSync(hooksDir, 0);
+      try {
+        const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+        const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+        const unreadable = entries.find((e) => e.change === 'unreadable' && e.area === 'hooks');
+        assert.ok(unreadable, 'must return an unreadable entry');
+        assert.equal(unreadable.restorable, false);
+      } finally {
+        chmodSync(hooksDir, 0o755);
+      }
+    }
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B11: isPrivate with hand-built layout objects and segment/case rules', () => {
+  const notLinked = {
+    gitDir: resolve('/r/.git'),
+    commonDir: resolve('/r/.git'),
+    workTree: resolve('/r'),
+    linked: false
+  };
+  assert.equal(isPrivate(notLinked, resolve('/r/.git')), true);
+  assert.equal(isPrivate(notLinked, resolve('/r/.git/hooks/x')), true);
+  assert.equal(isPrivate(notLinked, resolve('/r/src/a')), true);
+  assert.equal(isPrivate(notLinked, resolve('/rr/a')), false);
+  assert.equal(isPrivate(notLinked, resolve('/other')), false);
+
+  const linked = {
+    gitDir: resolve('/c/.git/worktrees/w'),
+    commonDir: resolve('/c/.git'),
+    workTree: resolve('/w'),
+    linked: true
+  };
+  assert.equal(isPrivate(linked, resolve('/c/.git/worktrees/w/x')), true);
+  assert.equal(isPrivate(linked, resolve('/w/a')), true);
+  assert.equal(isPrivate(linked, resolve('/c/.git/hooks/x')), false);
+  assert.equal(isPrivate(linked, resolve('/c/.git')), false);
+
+  if (process.platform === 'win32') {
+    const winLayout = {
+      gitDir: resolve('c:/r/.git'),
+      commonDir: resolve('c:/r/.git'),
+      workTree: resolve('c:/r'),
+      linked: false
+    };
+    assert.equal(isPrivate(winLayout, resolve('C:/R/a')), true);
+  } else {
+    const posixLayout = {
+      gitDir: resolve('/r/.git'),
+      commonDir: resolve('/r/.git'),
+      workTree: resolve('/r'),
+      linked: false
+    };
+    assert.equal(isPrivate(posixLayout, resolve('/R/a')), false);
+  }
+});
+
+test('B12: not private hooks are detect only and evidence folder remains empty', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const extDir = mkdtempSync(join(tmpdir(), 'zc-b12-ext-'));
+  writeFileSync(join(extDir, 'pre-commit'), '#!/bin/sh\nexit 0\n');
+  git(dir, 'config', 'core.hooksPath', extDir.replace(/\\/g, '/'));
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    assert.equal(baseline.hooks.private, false);
+
+    writeFileSync(join(extDir, 'pre-commit'), '#!/bin/sh\nexit 1\n');
+    writeFileSync(join(extDir, 'post-checkout'), '#!/bin/sh\necho new\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 2);
+    const mod = entries.find((e) => e.change === 'modified');
+    const add = entries.find((e) => e.change === 'added');
+    assert.ok(mod, 'must report modified hook');
+    assert.ok(add, 'must report added hook');
+    assert.equal(mod.restorable, false);
+    assert.equal(mod.restored, false);
+    assert.equal(add.restorable, false);
+    assert.equal(add.restored, false);
+
+    assert.equal(readFileSync(join(extDir, 'pre-commit'), 'utf8'), '#!/bin/sh\nexit 1\n');
+    assert.ok(existsSync(join(extDir, 'post-checkout')));
+    assert.equal(readdirSync(saveDir).length, 0);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B13: symlink where a protected config file is expected fails closed', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  writeFileSync(join(dir, '.gitignore'), 'real.cfg\nlink.cfg\n');
+  git(dir, 'add', '.gitignore');
+  git(dir, 'commit', '-q', '-m', 'ignore cfgs');
+  writeFileSync(join(dir, 'real.cfg'), '[user]\n\tname = Base\n');
+  try {
+    symlinkSync('real.cfg', join(dir, 'link.cfg'));
+  } catch (err) {
+    t.skip(`symlink creation failed: ${err.message}`);
+    return;
+  }
+  git(dir, 'config', 'include.path', '../link.cfg');
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    assert.throws(
+      () => metaBaseline(dir, layout),
+      (err) => err.code === 'ZC_GIT_META' && /git metadata:/.test(err.message)
+    );
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B14: checkMetaFiles does not write or delete through symlinked hooks dir', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  git(dir, 'config', 'core.hooksPath', '.hooks');
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    assert.equal(baseline.hooks.exists, false);
+
+    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim14-'));
+    const keepPath = join(victimDir, 'keep.txt');
+    writeFileSync(keepPath, 'keep content\n');
+
+    try {
+      symlinkSync(victimDir, join(dir, '.hooks'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      t.skip(`symlink creation failed: ${err.message}`);
+      return;
+    }
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].area, 'hooks');
+    assert.equal(entries[0].change, 'added');
+    assert.equal(entries[0].restorable, false);
+    assert.equal(entries[0].restored, false);
+
+    assert.ok(existsSync(keepPath));
+    assert.equal(readFileSync(keepPath, 'utf8'), 'keep content\n');
+    assert.ok(lstatSync(join(dir, '.hooks')).isSymbolicLink());
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B15: checkMetaFiles does not write through symlinked hooks subdirectory', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  const hooksDir = join(dir, '.git', 'hooks');
+  const subDir = join(hooksDir, 'sub');
+  mkdirSync(subDir, { recursive: true });
+  const subX = join(subDir, 'x');
+  writeFileSync(subX, 'a');
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim15-'));
+    writeFileSync(join(victimDir, 'victim.txt'), 'safe\n');
+    const victimBefore = readdirSync(victimDir);
+
+    rmSync(subDir, { recursive: true, force: true });
+    try {
+      symlinkSync(victimDir, subDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      t.skip(`symlink creation failed: ${err.message}`);
+      return;
+    }
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    const victimAfter = readdirSync(victimDir);
+    assert.deepEqual(victimAfter, victimBefore);
+    assert.equal(readFileSync(join(victimDir, 'victim.txt'), 'utf8'), 'safe\n');
+
+    const entryX = entries.find((e) => e.path.endsWith('sub/x'));
+    assert.ok(entryX, 'sub/x entry must exist');
+    assert.equal(entryX.restorable, false);
+    assert.equal(entryX.restored, false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B16: checkMetaFiles does not write through symlinked info directory', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim16-'));
+    const victimExclude = join(victimDir, 'exclude');
+    writeFileSync(victimExclude, 'v');
+
+    const infoDir = join(dir, '.git', 'info');
+    rmSync(infoDir, { recursive: true, force: true });
+    try {
+      symlinkSync(victimDir, infoDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      t.skip(`symlink creation failed: ${err.message}`);
+      return;
+    }
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.equal(readFileSync(victimExclude, 'utf8'), 'v');
+
+    const excludeEntry = entries.find((e) => e.path.endsWith('exclude'));
+    assert.ok(excludeEntry, 'exclude entry must exist');
+    assert.equal(excludeEntry.restorable, false);
+    assert.equal(excludeEntry.restored, false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B17: added directory tree restored flag and hooks dir entry', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  git(dir, 'config', 'core.hooksPath', '.hooks2');
+
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    assert.equal(baseline.hooks.exists, false);
+
+    const hooks2Dir = join(dir, '.hooks2');
+    const dDir = join(hooks2Dir, 'd');
+    mkdirSync(dDir, { recursive: true });
+    writeFileSync(join(dDir, 'h'), '#!/bin/sh\nexit 0\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    assert.ok(entries.length > 0, 'must have entries');
+    for (const entry of entries) {
+      assert.equal(entry.restored, true, `entry ${entry.path} must have restored: true`);
+    }
+    assert.equal(existsSync(hooks2Dir), false, '.hooks2 must no longer exist');
+
+    const dirEntry = entries.find((e) => e.area === 'hooks' && (e.path === '.hooks2' || e.path.endsWith('.hooks2')));
+    assert.ok(dirEntry, 'an entry for the hooks directory itself must exist');
+    assert.equal(dirEntry.change, 'added');
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B18: checkMetaFiles never throws on corrupted baseline', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    baseline.hooks.entries = null;
+
+    let entries;
+    assert.doesNotThrow(() => {
+      entries = checkMetaFiles(dir, layout, baseline);
+    });
+
+    assert.ok(Array.isArray(entries), 'must return an array');
+    assert.ok(entries.length > 0, 'must have entries');
+    const lastEntry = entries[entries.length - 1];
+    assert.equal(lastEntry.change, 'unreadable');
+    assert.equal(lastEntry.area, 'git');
+    assert.equal(lastEntry.path, '.git');
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B19: non-private config/info file is detect-only', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+
+    const extFolder = mkdtempSync(join(tmpdir(), 'zc-b19-ext-'));
+    const extFile = join(extFolder, 'ext.cfg');
+    writeFileSync(extFile, 'original content\n');
+
+    const fakeRecord = {
+      area: 'config',
+      path: extFile,
+      private: false,
+      bytes: Buffer.from('original content\n')
+    };
+    baseline.files = [...baseline.files, fakeRecord];
+
+    writeFileSync(extFile, 'modified content\n');
+
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+
+    const modEntry = entries.find((e) => samePath(e.path, extFile));
+    assert.ok(modEntry, 'modified entry must exist');
+    assert.equal(modEntry.change, 'modified');
+    assert.equal(modEntry.restorable, false);
+    assert.equal(modEntry.restored, false);
+    assert.equal(readFileSync(extFile, 'utf8'), 'modified content\n');
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+// B20-B24: ancestor-symlink escapes and fail-closed guard.
+function treeSnapshot(dir, rel = '') {
+  const out = {};
+  for (const name of readdirSync(join(dir, rel)).sort()) {
+    const r = rel ? `${rel}/${name}` : name;
+    const st = lstatSync(join(dir, r));
+    if (st.isDirectory()) {
+      out[`${r}/`] = null;
+      Object.assign(out, treeSnapshot(dir, r));
+    } else {
+      out[r] = readFileSync(join(dir, r), 'utf8');
+    }
+  }
+  return out;
+}
+
+function ancestorCase(t, { baselineFiles, victimFiles, mutate }) {
+  makeHome();
+  const { dir } = makeRepo();
+  git(dir, 'config', 'core.hooksPath', 'sub/hooks');
+  const sub = join(dir, 'sub');
+  for (const [rel, body] of Object.entries(baselineFiles)) {
+    mkdirSync(dirname(join(sub, rel)), { recursive: true });
+    writeFileSync(join(sub, rel), body);
+  }
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const victim = mkdtempSync(join(tmpdir(), 'zc-victim-anc-'));
+    for (const [rel, body] of Object.entries(victimFiles)) {
+      if (rel.endsWith('/')) {
+        mkdirSync(join(victim, rel), { recursive: true });
+        continue;
+      }
+      mkdirSync(dirname(join(victim, rel)), { recursive: true });
+      writeFileSync(join(victim, rel), body);
+    }
+    rmSync(sub, { recursive: true, force: true });
+    try {
+      symlinkSync(victim, sub, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      t.skip(`symlink creation failed: ${err.message}`);
+      return;
+    }
+    if (mutate) mutate(victim);
+    const before = treeSnapshot(victim);
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+    assert.deepEqual(treeSnapshot(victim), before);
+    for (const e of entries.filter((x) => x.area === 'hooks')) {
+      assert.equal(e.restorable, false, JSON.stringify(e));
+      assert.equal(e.restored, false, JSON.stringify(e));
+    }
+    return { entries, saveDir };
+  } finally {
+    unpinLayout(dir);
+  }
+}
+
+test('B20: ancestor symlink over baseline hooks: no victim change, no evidence of victim content', (t) => {
+  const r = ancestorCase(t, {
+    baselineFiles: { 'hooks/h': 'orig' },
+    victimFiles: { 'hooks/h': 'EVIL', 'hooks/extra': 'x' }
+  });
+  if (!r) return;
+  assert.ok(r.entries.some((e) => e.area === 'hooks'), 'hooks entries expected');
+  const ev = existsSync(r.saveDir) ? JSON.stringify(treeSnapshot(r.saveDir)) : '';
+  assert.ok(!ev.includes('EVIL') && !ev.includes('"x"'), 'evidence must not hold victim content');
+});
+
+test('B21: ancestor symlink to empty victim: removed hooks are not recreated', (t) => {
+  ancestorCase(t, { baselineFiles: { 'hooks/h': 'orig' }, victimFiles: {}, mutate: null });
+});
+
+test('B22: ancestor symlink with no baseline hooks dir: victim untouched', (t) => {
+  ancestorCase(t, { baselineFiles: {}, victimFiles: { 'hooks/keep': 'k' } });
+});
+
+test('B23: ancestor symlink with added directory in victim: victim untouched', (t) => {
+  ancestorCase(t, { baselineFiles: {}, victimFiles: { 'hooks/d/f': 'f' } });
+});
+
+test('B24: private hooks dir outside every layout root fails closed', () => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const outside = mkdtempSync(join(tmpdir(), 'zc-b24-'));
+    baseline.hooks = { ...baseline.hooks, private: true, dir: outside, exists: false, entries: [] };
+    const added = join(outside, 'added');
+    writeFileSync(added, 'a');
+    const entries = checkMetaFiles(dir, layout, baseline, {});
+    const hit = entries.filter((e) => e.area === 'hooks');
+    assert.ok(hit.length > 0, 'entry expected');
+    for (const e of hit) assert.equal(e.restorable, false);
+    assert.ok(existsSync(added));
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+test('B25: ancestor symlink, victim has empty hooks dir: it is not removed', (t) => {
+  ancestorCase(t, { baselineFiles: {}, victimFiles: { 'hooks/': null } });
+});
+
+test('B26: ancestor symlink, victim has empty subdirectory under hooks: it is not removed', (t) => {
+  ancestorCase(t, { baselineFiles: {}, victimFiles: { 'hooks/d/': null, 'hooks/keep': 'k' } });
+});
+
+test('B27: ancestor symlink, baseline hooks exist, victim has extra empty dir: it is not removed', (t) => {
+  ancestorCase(t, { baselineFiles: { 'hooks/h': 'orig' }, victimFiles: { 'hooks/h': 'orig', 'hooks/e/': null } });
+});
+
+test('B28: POSIX directory name containing a backslash that becomes a symlink: victim untouched', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('backslash is a path separator on Windows');
+    return;
+  }
+  makeHome();
+  const { dir } = makeRepo();
+  const bsDir = join(dir, '.git', 'hooks', 'a\\b');
+  mkdirSync(bsDir, { recursive: true });
+  writeFileSync(join(bsDir, 'f'), 'orig');
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const victim = mkdtempSync(join(tmpdir(), 'zc-victim-bs-'));
+    rmSync(bsDir, { recursive: true, force: true });
+    try {
+      symlinkSync(victim, bsDir, 'dir');
+    } catch (err) {
+      t.skip(`symlink creation failed: ${err.message}`);
+      return;
+    }
+    const before = treeSnapshot(victim);
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+    assert.deepEqual(treeSnapshot(victim), before);
+    const removed = entries.find((e) => e.change === 'removed');
+    assert.ok(removed, 'removed entry expected');
+    assert.equal(removed.restorable, false);
+    assert.equal(removed.restored, false);
+  } finally {
+    unpinLayout(dir);
+  }
+});
+
+// B29-B32: hard-linked targets must never be modified in place.
+function hardlinkCase(t, { name, baseBody, baseMode, victimBody, victimMode, change }) {
+  makeHome();
+  const { dir } = makeRepo();
+  const hooks = join(dir, '.git', 'hooks');
+  mkdirSync(hooks, { recursive: true });
+  const hook = join(hooks, 'pre-commit');
+  if (baseBody !== null) {
+    writeFileSync(hook, baseBody);
+    chmodSync(hook, baseMode);
+  }
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const vd = mkdtempSync(join(tmpdir(), `zc-victim-${name}-`));
+    const victim = join(vd, 'victim');
+    writeFileSync(victim, victimBody);
+    chmodSync(victim, victimMode);
+    rmSync(hook, { force: true });
+    try {
+      linkSync(victim, hook);
+    } catch (err) {
+      t.skip(`hard link creation failed: ${err.message}`);
+      return;
+    }
+    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
+    assert.equal(readFileSync(victim, 'utf8'), victimBody);
+    assert.equal(lstatSync(victim).mode & 0o777, victimMode);
+    const hit = entries.find((e) => e.area === 'hooks' && e.path.endsWith('pre-commit'));
+    assert.ok(hit, `entry expected (${change})`);
+    assert.equal(hit.change, change);
+    return hit;
+  } finally {
+    unpinLayout(dir);
+  }
+}
+
+test('B29: hard-linked modified hook is not overwritten in place', (t) => {
+  const hit = hardlinkCase(t, { name: 'b29', baseBody: 'orig', baseMode: 0o644, victimBody: 'PRECIOUS', victimMode: 0o600, change: 'modified' });
+  if (!hit) return;
+  assert.equal(hit.restored, false);
+  assert.equal(hit.restorable, false);
+});
+
+test('B30: hard-linked hook with only a mode change: victim mode and content untouched', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('mode bits');
+    return;
+  }
+  const hit = hardlinkCase(t, { name: 'b30', baseBody: 'same', baseMode: 0o755, victimBody: 'same', victimMode: 0o644, change: 'mode' });
+  if (!hit) return;
+  assert.equal(hit.restored, false);
+});
+
+test('B31: hard-linked added hook is unlinked without touching the victim', (t) => {
+  hardlinkCase(t, { name: 'b31', baseBody: null, baseMode: 0o644, victimBody: 'PRECIOUS', victimMode: 0o600, change: 'added' });
+});
+
+test('B32: hard-linked modified config/info file is not overwritten in place', (t) => {
+  makeHome();
+  const { dir } = makeRepo();
+  const layout = gitLayout(dir);
+  pinLayout(dir, layout);
+  try {
+    const baseline = metaBaseline(dir, layout);
+    const target = join(dir, '.git', 'zc-b32-info');
+    writeFileSync(target, 'orig');
+    baseline.files = [...baseline.files, { area: 'info', path: target, private: true, bytes: Buffer.from('orig') }];
+    const vd = mkdtempSync(join(tmpdir(), 'zc-victim-b32-'));
+    const victim = join(vd, 'victim');
+    writeFileSync(victim, 'PRECIOUS');
+    rmSync(target);
+    try {
+      linkSync(victim, target);
+    } catch (err) {
+      t.skip(`hard link creation failed: ${err.message}`);
+      return;
+    }
+    const entries = checkMetaFiles(dir, layout, baseline, {});
+    assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS');
+    const hit = entries.find((e) => e.path.endsWith('zc-b32-info'));
+    assert.ok(hit);
+    assert.equal(hit.restored, false);
+    assert.equal(hit.restorable, false);
+  } finally {
+    unpinLayout(dir);
   }
 });
