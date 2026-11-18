@@ -214,6 +214,11 @@ test('E1: rejectRun refuses a layout mismatch, even with force', async () => {
   assert.throws(() => rejectRun({ root: dir, runId: r.runId, force: true }), /layout/);
 });
 
+test('E1b: the unrestored result tells the user that .zc/ edits were not rolled back', async () => {
+  const { r } = await unrestoredRun();
+  assert.match(r.nextAction, /under \.zc\/ were not rolled back/);
+});
+
 test('E2: rejectRun refuses a gitMetaUnrestored run unless force is given', async () => {
   const { dir, r } = await unrestoredRun();
   assert.throws(() => rejectRun({ root: dir, runId: r.runId }), /gitMetaUnrestored|checked by hand|zc ack/);

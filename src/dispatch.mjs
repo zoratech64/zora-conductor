@@ -226,7 +226,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       ...extra, phase, gitMeta: entries, gitMetaUnrestored: true,
       nextAction: `git metadata changed during the ${phase} phase and could not be fully repaired: ${entries.filter((e) => !e.restored).map((e) => `${e.path} (${e.change}${e.detail ? `: ${e.detail}` : ''})`).join(', ')}. ` +
         (entries.some((e) => e.area === 'refs') ? 'If the worker moved HEAD, a branch or a tag, nothing was rolled back automatically; inspect with `git reflog`. ' : '') +
-        `Evidence is in ${join(runDir, phase === 'verify' ? 'git-meta-violations-verify-<n>' : 'git-meta-violations-<n>')}. Do not run git commands in this repository until you have checked these items by hand, then \`zc ack ${id}\`.`
+        `Evidence is in ${join(runDir, phase === 'verify' ? 'git-meta-violations-verify-<n>' : 'git-meta-violations-<n>')}. Edits the worker made under .zc/ were not rolled back; check them by hand too. Do not run git commands in this repository until you have checked these items by hand, then \`zc ack ${id}\`.`
     }, false);
     /** Paths made visible by a rollback (for example by a rolled-back .gitignore) that were not part of the result. */
     const revealedAfterRollback = (before) => {

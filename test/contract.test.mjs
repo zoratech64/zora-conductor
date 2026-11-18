@@ -123,3 +123,10 @@ test('README states what zc does and does not guarantee', () => {
     assert.ok(readme.includes(layer), layer);
   }
 });
+
+test('npm package ships docs/*.md but not the audit spec, and CLI help shows optional ack id', () => {
+  const pkg = JSON.parse(readFileSync(resolve('package.json'), 'utf8'));
+  assert.ok(pkg.files.includes('docs/*.md'));
+  assert.ok(!pkg.files.includes('docs'));
+  assert.match(readFileSync(resolve('src/cli.mjs'), 'utf8'), /zc ack \[runId\]/);
+});

@@ -11,5 +11,5 @@
   },
   "license": "MIT",
   "author": "ZoRa Tech",
-  "files": ["bin", "src", "skills", "agents", "commands", ".claude-plugin", "docs", "vendor"]
+  "files": ["bin", "src", "skills", "agents", "commands", ".claude-plugin", "docs/*.md", "vendor"]
 }

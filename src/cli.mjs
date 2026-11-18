@@ -23,7 +23,7 @@ Project (run inside the git repo):
   zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result (task declares cause:)
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
   zc accept [<runId>]                     stage only a verified run's files (never commits)
-  zc ack <runId>                          record that you checked the git metadata a run could not repair
+  zc ack [runId]                          record that you checked the git metadata a run could not repair
   zc runs                                 recent runs
   zc status                               accounts, cooldowns, latest run
   zc doctor                               check this machine and project
