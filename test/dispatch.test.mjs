@@ -17,7 +17,7 @@ test('success: worker edits are left in the tree, verified, scoped', async () =>
   const { dir, config } = makeRepo();
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'hi' } });
   const r = await dispatch({ root: dir, task: scoped(), config });
-  assert.equal(r.status, 'OK');
+  assert.equal(r.status, "OK", JSON.stringify([r.nextAction, r.gitMeta]));
   assert.equal(r.exitCode, 0);
   assert.deepEqual(r.changed, ['src/a.txt']);
   assert.equal(r.verify.length, 1);
