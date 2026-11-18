@@ -42,6 +42,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 - If the worker process itself fails to start or throws, no `result.json` is written, so git metadata it changed is not flagged for the next dispatch.
 - Every dispatch, accept and reject reads all runs' `result.json` files to find a pending git metadata run; very large run stores make that slower.
 - Global and system git config, submodule metadata and effects outside the repository are not protected (see `docs/ARCHITECTURE.md`).
+- Windows: two checks are not covered by tests there. Windows has no permission bits, so the hard-link tests do not compare file modes. Git hides a linked worktree's `.git` file, so a worker cannot rewrite it and the pointer-restore test runs on Linux and macOS only.
 
 ### Fixed
 
