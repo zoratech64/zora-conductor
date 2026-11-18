@@ -15,6 +15,8 @@ export const DEFAULTS = {
     minutes: 30,
     maxAttempts: 8,
     cooldownMinutes: 60,
+    /** No cooldown, however the reset time was learned, lasts longer than this. */
+    maxCooldownMinutes: 1440,
     flakyCooldownMinutes: 10,
     verifyTimeoutMinutes: 15,
     /** reset: roll a failed worker's partial edits back (patch saved first). continue: next account picks up. */
@@ -76,6 +78,7 @@ export function loadConfig(root) {
   validateEcc(config.ecc, root);
   for (const key of ['minutes', 'cooldownMinutes', 'flakyCooldownMinutes', 'verifyTimeoutMinutes']) parseMinutes(config.defaults[key], `defaults.${key}`);
   parseCount(config.defaults.maxAttempts, 'defaults.maxAttempts', { max: 50 });
+  parseCount(config.defaults.maxCooldownMinutes, 'defaults.maxCooldownMinutes', { min: 1, max: 10080 });
   if (!ON_LIMIT.includes(config.defaults.onLimit)) throw new Error(`defaults.onLimit must be ${ON_LIMIT.join(' or ')}`);
   if (!PERMISSIONS.includes(config.worker.permissions)) throw new Error(`worker.permissions must be ${PERMISSIONS.join(', ')}`);
   if (config.worker.adapter !== 'agy') throw new Error(`worker.adapter "${config.worker.adapter}" is not supported yet (only "agy")`);

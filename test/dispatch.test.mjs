@@ -590,3 +590,31 @@ test('chained repair: carried verify output stays carried', async () => {
   assert.deepEqual(c.carriedVerify, ['src/gen.txt']);
   assert.ok(!c.changed.includes('src/gen.txt'));
 });
+
+test('quota with a far-future reset hint is capped at maxCooldownMinutes', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'quota', message: 'RESOURCE_EXHAUSTED: quota exceeded, valid until 2031-01-01T00:00:00Z' });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.attempts[0].kind, 'quota');
+  assert.equal(r.attempts[0].cooldownSource, 'default');
+  const until = Date.parse(r.attempts[0].cooldownUntil);
+  assert.ok(until <= Date.now() + 24 * 3_600_000, 'cooldown is at most 24 h');
+  assert.ok(until >= Date.now() + 50 * 60_000, 'default cooldown (60 minutes) applies');
+  assert.ok(g1);
+});
+
+test('quota with a relative hint records source "hint"', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'quota' });
+  const r = await dispatch({ root: dir, task: scoped(), config });
+  assert.equal(r.attempts[0].cooldownSource, 'hint');
+});
+
+test('defaults.maxCooldownMinutes is validated and defaults to 1440', () => {
+  assert.equal(makeRepo().config.defaults.maxCooldownMinutes, 1440);
+  assert.throws(() => makeRepo({ defaults: { maxCooldownMinutes: 0 } }), /maxCooldownMinutes/);
+  assert.throws(() => makeRepo({ defaults: { maxCooldownMinutes: 'x' } }), /maxCooldownMinutes/);
+  assert.throws(() => makeRepo({ defaults: { maxCooldownMinutes: 10081 } }), /maxCooldownMinutes/);
+});

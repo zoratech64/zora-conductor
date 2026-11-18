@@ -225,3 +225,14 @@ test('attemptMetrics: full parse, missing result event, empty tools, multi-byte 
   assert.equal(mMulti.promptBytes, Buffer.byteLength(multiBytePrompt, 'utf8'));
   assert.ok(mMulti.promptBytes > multiBytePrompt.length);
 });
+
+test('parseResetHint: far-future, timezone-less and over-cap hints are bounded', () => {
+  const now = Date.UTC(2026, 10, 8, 12);
+  assert.equal(parseResetHint('valid until 2031-01-01T00:00:00Z', now), null, 'beyond the default 24 h cap');
+  assert.equal(parseResetHint('valid until 2031-01-01T00:00:00Z', now, { maxMs: 10 * 365 * 86_400_000 }), Date.UTC(2031, 0, 1));
+  assert.equal(parseResetHint('resets at 2026-11-08T15:00:00', now), null, 'no timezone designator: ignored');
+  assert.equal(parseResetHint('resets at 2026-11-08T10:00:00Z', now), null, 'already past');
+  assert.equal(parseResetHint('please try again in 30 minutes', now), now + 30 * 60_000);
+  assert.equal(parseResetHint('retry after 48 hours', now), null, 'relative hints obey the same cap');
+  assert.equal(parseResetHint('retry after 48 hours', now, { maxMs: 72 * 3_600_000 }), now + 48 * 3_600_000);
+});

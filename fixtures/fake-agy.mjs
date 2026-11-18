@@ -54,7 +54,7 @@ if (mode !== 'ok' && calls > (scenario.failTimes ?? Infinity)) mode = 'ok';
 if (mode === 'ok' || scenario.partial) writeFiles();
 
 switch (mode) {
-  case 'quota': failResult('RESOURCE_EXHAUSTED: quota exceeded. Please try again in 30 minutes.'); break;
+  case 'quota': failResult(scenario.message ?? 'RESOURCE_EXHAUSTED: quota exceeded. Please try again in 30 minutes.'); break;
   case 'license': failResult('403 SUBSCRIPTION_REQUIRED: you do not have a valid license of this product'); break;
   case 'location': failResult('User location is not supported for the API use.'); break;
   case 'server': failResult('Internal error encountered'); break;

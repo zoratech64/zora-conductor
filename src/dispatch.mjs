@@ -235,6 +235,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     };
     const cooldownMs = config.defaults.cooldownMinutes * 60_000;
     const flakyMs = config.defaults.flakyCooldownMinutes * 60_000;
+    const maxCooldownMs = config.defaults.maxCooldownMinutes * 60_000;
     const flakyRetried = new Set();
     let deniedRetried = false;
 
@@ -521,7 +522,10 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
       switch (kind) {
         case 'quota': {
-          const until = parseResetHint(errorText) ?? Date.now() + cooldownMs;
+          const now = Date.now();
+          const hint = parseResetHint(errorText, now, { maxMs: maxCooldownMs });
+          const until = Math.min(hint ?? now + cooldownMs, now + maxCooldownMs);
+          attempt.cooldownSource = hint ? 'hint' : 'default';
           accounts.cooldown(account.id, until, 'quota');
           attempt.cooldownUntil = new Date(until).toISOString();
           continue;
@@ -550,7 +554,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           });
         default:
           if (!flakyRetried.has(account.id)) { flakyRetried.add(account.id); continue; } // one unchanged rerun
-          accounts.cooldown(account.id, Date.now() + flakyMs, kind);
+          accounts.cooldown(account.id, Date.now() + Math.min(flakyMs, maxCooldownMs), kind);
           continue;
       }
     }

@@ -27,11 +27,13 @@ If step 3 fails (signed out on the next run), the private keyring is not persist
 
 | Signal from agy | What `zc` does |
 |---|---|
-| quota / rate limit | Cooldown (uses the reset time in the message, else 60 minutes), switch to the next account |
+| quota / rate limit | Cooldown (uses the reset time in the message, else 60 minutes, never longer than `defaults.maxCooldownMinutes`, 24 hours by default), switch to the next account |
 | authentication required | Marks the account `needs-login`, switches. Fix with `zc account login <id>` |
 | no Antigravity license | Marks the account `blocked`, switches |
 | "location not supported" | Stops the whole run. Changing accounts cannot help, and `zc` will not try |
 | Google 5xx / empty reply | One rerun on the same account, then a 10 minute cooldown |
+
+A reset time in a message counts only if it is an absolute time with a timezone, or a relative time ("in 30 minutes"), and lies between now and `defaults.maxCooldownMinutes` ahead. Anything else, such as a date years away, is ignored and the default cooldown applies. A genuine weekly reset hint is therefore capped at 24 hours: the account is tried again once a day and cools down again if it is still out of quota.
 
 `zc account reset <id>` clears a hold once you have confirmed the account is fine.
 

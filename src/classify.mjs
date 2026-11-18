@@ -24,17 +24,22 @@ export function classify(text) {
 
 const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 };
 
-/** Pull a retry/reset time out of a provider message; returns an epoch ms or null. */
-export function parseResetHint(text, now = Date.now()) {
-  const iso = /\b(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2})?)/.exec(text);
+const DEFAULT_MAX_COOLDOWN_MS = 24 * 3_600_000;
+
+/**
+ * Pull a retry/reset time out of a provider message; returns an epoch ms or null.
+ * Only absolute times with a timezone count, and nothing further than maxMs ahead (or already past) is believed.
+ */
+export function parseResetHint(text, now = Date.now(), { maxMs = DEFAULT_MAX_COOLDOWN_MS } = {}) {
+  const iso = /\b(\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:?\d{2}))/.exec(text);
   if (iso) {
     const at = Date.parse(iso[1]);
-    if (at > now) return at;
+    return at > now && at - now <= maxMs ? at : null;
   }
   const rel = /(?:try again|retry|resets?|available)(?:\s+(?:in|after))?\s+(\d+)\s*(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b/i.exec(text);
   if (rel) {
-    const unit = rel[2][0].toLowerCase();
-    return now + Number(rel[1]) * UNIT_MS[unit];
+    const ms = Number(rel[1]) * UNIT_MS[rel[2][0].toLowerCase()];
+    return ms <= maxMs ? now + ms : null;
   }
   return null;
 }
