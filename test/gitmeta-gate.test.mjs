@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, ackRun, dispatch, rejectRun } from '../src/dispatch.mjs';
 import { runsDir } from '../src/paths.mjs';
-import { addFake, git, makeHome, makeRepo, setScenario, task } from './helpers.mjs';
+import { addFake, git, makeHome, makeRepo, mkTmp, setScenario, task } from './helpers.mjs';
 
 const hasSh = () => spawnSync('sh', ['-c', 'exit 0']).status === 0;
 const scoped = () => task('id: T-1\nallowed:\n  - src/');
@@ -46,7 +46,7 @@ test('D3 (no execution): verify sets core.fsmonitor to a marker script, which ne
   if (!hasSh()) return t.skip('needs sh');
   makeHome();
   const { dir, config } = makeRepo();
-  const extra = mkdtempSync(join(tmpdir(), 'zc-d3-'));
+  const extra = mkTmp('zc-d3-');
   const marker = join(extra, 'm');
   const script = join(extra, 'fsmon.sh');
   writeFileSync(script, markerScript(marker, 'exit 1'));
@@ -63,7 +63,7 @@ test('D4 (no execution): verify defines clean/smudge filters via info/attributes
   if (!hasSh()) return t.skip('needs sh');
   makeHome();
   const { dir, config } = makeRepo();
-  const extra = mkdtempSync(join(tmpdir(), 'zc-d4-'));
+  const extra = mkTmp('zc-d4-');
   const marker = join(extra, 'm');
   const filter = join(extra, 'f.sh');
   writeFileSync(filter, markerScript(marker, 'cat'));
@@ -83,7 +83,7 @@ test('D5 (no execution): verify plants a post-index-change hook; the rollback ne
   if (!hasSh()) return t.skip('needs sh');
   makeHome();
   const { dir, config } = makeRepo();
-  const extra = mkdtempSync(join(tmpdir(), 'zc-d5-'));
+  const extra = mkTmp('zc-d5-');
   const marker = join(extra, 'm');
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a', 'other/x.txt': 'x' } });
   const hook = JSON.stringify(markerScript(marker));
@@ -151,7 +151,7 @@ test('D9: verify creates a ref: NEEDS_HUMAN, unrestored, no workerState, nothing
 test('D10: a linked worktree: shared hooks are detect-only, a rewritten .git pointer is restored', async () => {
   makeHome();
   const { dir: main, config } = makeRepo();
-  const wt = mkdtempSync(join(tmpdir(), 'zc-wt-d10-'));
+  const wt = mkTmp('zc-wt-d10-');
   git(main, 'worktree', 'add', wt, '-b', 'wt10');
   mkdirSync(join(wt, '.zc'), { recursive: true });
   writeFileSync(join(wt, '.zc/config.json'), readFileSync(join(main, '.zc/config.json')));
@@ -253,7 +253,7 @@ test('D12b: a baseline fsmonitor and clean/smudge filter still work; rollback ap
   if (!hasSh()) return t.skip('needs sh');
   makeHome();
   const { dir, config } = makeRepo();
-  const extra = mkdtempSync(join(tmpdir(), 'zc-d12b-'));
+  const extra = mkTmp('zc-d12b-');
   const fsmon = join(extra, 'fsmon.sh');
   writeFileSync(fsmon, '#!/bin/sh\nexit 1\n');
   chmodSync(fsmon, 0o755);

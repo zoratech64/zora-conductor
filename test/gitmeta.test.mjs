@@ -54,7 +54,7 @@ import {
   unpinLayout
 } from '../src/gitx.mjs';
 import { projectState } from '../src/paths.mjs';
-import { addFake, calls, git, makeHome, makeRepo, task } from './helpers.mjs';
+import { addFake, calls, git, makeHome, makeRepo, mkTmp, task } from './helpers.mjs';
 
 function hasSh() {
   const r = spawnSync('sh', ['-c', 'exit 0']);
@@ -68,7 +68,7 @@ test('A1: helpers do not execute core.fsmonitor or hooks', (t) => {
   }
   makeHome();
   const { dir } = makeRepo();
-  const extDir = mkdtempSync(join(tmpdir(), 'zc-a1-'));
+  const extDir = mkTmp('zc-a1-');
 
   const fsmonMarker = join(extDir, 'fsmon.marker').replace(/\\/g, '/');
   const fsmonScript = join(extDir, 'fsmon.sh');
@@ -91,7 +91,7 @@ test('A1: helpers do not execute core.fsmonitor or hooks', (t) => {
   const entries = statusEntries(dir);
   const ds = dirtyState(dir);
   pathStates(dir, ['README.md', 'untracked.txt']);
-  const saveDir = mkdtempSync(join(tmpdir(), 'save1-'));
+  const saveDir = mkTmp('save1-');
   savePartial(dir, saveDir, entries);
   rollbackPaths(dir, statusEntries(dir), ds);
 
@@ -121,7 +121,7 @@ test('A2: savePartial does not execute diff.external', (t) => {
   git(dir, 'config', 'diff.external', diffScript.replace(/\\/g, '/'));
 
   writeFileSync(join(dir, 'README.md'), 'changed line\n');
-  const saveDir = mkdtempSync(join(tmpdir(), 'save2-'));
+  const saveDir = mkTmp('save2-');
   savePartial(dir, saveDir, statusEntries(dir));
 
   assert.ok(!existsSync(diffMarker), 'diff.external marker should not exist');
@@ -130,10 +130,10 @@ test('A2: savePartial does not execute diff.external', (t) => {
 
 test('A3: pinLayout isolates git operations from modified pointer files', () => {
   const { dir } = makeRepo();
-  const wt = mkdtempSync(join(tmpdir(), 'zc-wt3-'));
+  const wt = mkTmp('zc-wt3-');
   git(dir, 'worktree', 'add', wt, '-b', 'wt');
 
-  const decoy = mkdtempSync(join(tmpdir(), 'zc-decoy3-'));
+  const decoy = mkTmp('zc-decoy3-');
   git(decoy, 'init', '-q', '-b', 'decoy');
   git(decoy, 'config', 'user.email', 'd@example.com');
   git(decoy, 'config', 'user.name', 'Decoy');
@@ -177,7 +177,7 @@ test('A4: gitLayout on normal repo, linked worktree, and separate-git-dir', () =
   assert.ok(samePath(normalLayout.gitDir, git(normalDir, 'rev-parse', '--absolute-git-dir').trim()));
   assert.ok(samePath(normalLayout.commonDir, resolve(normalDir, git(normalDir, 'rev-parse', '--git-common-dir').trim())));
 
-  const wtDir = mkdtempSync(join(tmpdir(), 'zc-wt4-'));
+  const wtDir = mkTmp('zc-wt4-');
   git(normalDir, 'worktree', 'add', wtDir, '-b', 'wt4');
   const wtLayout = gitLayout(wtDir);
   assert.equal(wtLayout.linked, true);
@@ -187,8 +187,8 @@ test('A4: gitLayout on normal repo, linked worktree, and separate-git-dir', () =
   assert.ok(samePath(wtLayout.gitDir, git(wtDir, 'rev-parse', '--absolute-git-dir').trim()));
   assert.ok(samePath(wtLayout.commonDir, resolve(wtDir, git(wtDir, 'rev-parse', '--git-common-dir').trim())));
 
-  const sepGit = mkdtempSync(join(tmpdir(), 'sep-git4-'));
-  const sepWt = mkdtempSync(join(tmpdir(), 'sep-wt4-'));
+  const sepGit = mkTmp('sep-git4-');
+  const sepWt = mkTmp('sep-wt4-');
   git(sepWt, 'init', '-q', '-b', 'main', '--separate-git-dir', sepGit);
   git(sepWt, 'config', 'user.email', 't@example.com');
   git(sepWt, 'config', 'user.name', 'Test');
@@ -207,7 +207,7 @@ test('A4: gitLayout on normal repo, linked worktree, and separate-git-dir', () =
 test('A5: dispatch fails closed before worker starts on bare repo or symlinked .git', async (t) => {
   // (a) Bare repository root
   makeHome();
-  const bareDir = mkdtempSync(join(tmpdir(), 'zc-bare5-'));
+  const bareDir = mkTmp('zc-bare5-');
   git(bareDir, 'init', '--bare', '-q');
   mkdirSync(join(bareDir, '.zc'), { recursive: true });
   writeFileSync(join(bareDir, '.zc', 'config.json'), JSON.stringify({
@@ -228,7 +228,7 @@ test('A5: dispatch fails closed before worker starts on bare repo or symlinked .
   // (b) Symlink to .git directory
   makeHome();
   const { dir: symRepoDir, config: symConfig } = makeRepo();
-  const realGit = mkdtempSync(join(tmpdir(), 'zc-realgit5-'));
+  const realGit = mkTmp('zc-realgit5-');
   rmdirSync(realGit);
   renameSync(join(symRepoDir, '.git'), realGit);
   try {
@@ -278,7 +278,7 @@ test('A7: checkIdentity detects metadata changes and restoreIdentity restores po
   assert.deepEqual(checkIdentity(normalDir, layout1), []);
 
   // 2. Linked worktree with rewritten .git text
-  const wt = mkdtempSync(join(tmpdir(), 'zc-wt7-'));
+  const wt = mkTmp('zc-wt7-');
   git(normalDir, 'worktree', 'add', wt, '-b', 'wt7');
   const layout2 = gitLayout(wt);
   const dotGitPath = join(wt, '.git');
@@ -291,7 +291,7 @@ test('A7: checkIdentity detects metadata changes and restoreIdentity restores po
   assert.equal(changes2[0].restorable, true);
   assert.equal(changes2[0].restored, false);
 
-  const saveDir = mkdtempSync(join(tmpdir(), 'save7-'));
+  const saveDir = mkTmp('save7-');
   const restored2 = restoreIdentity(wt, layout2, changes2, { saveDir });
   assert.equal(restored2[0].restored, true);
   assert.equal(readFileSync(dotGitPath, 'utf8'), origDotGit);
@@ -301,7 +301,7 @@ test('A7: checkIdentity detects metadata changes and restoreIdentity restores po
   // 3. Normal repo whose .git directory was renamed away and copied back
   const { dir: dir3 } = makeRepo();
   const layout3 = gitLayout(dir3);
-  const tempGit = mkdtempSync(join(tmpdir(), 'temp-git7-'));
+  const tempGit = mkTmp('temp-git7-');
   rmdirSync(tempGit);
   renameSync(join(dir3, '.git'), tempGit);
   cpSync(tempGit, join(dir3, '.git'), { recursive: true });
@@ -392,7 +392,7 @@ test('B1: hooks added, modified and removed are detected and restored with evide
     writeFileSync(postCheckoutPath, '#!/bin/sh\necho new\n');
     rmSync(prePushPath);
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 3);
@@ -443,7 +443,7 @@ test('B2: hook mode change is detected and restored on POSIX', (t) => {
 
     chmodSync(hookPath, 0o755);
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 1);
@@ -478,7 +478,7 @@ test('B3: core.hooksPath pointing to ignored in-tree directory is checked and re
     const hookPath = join(dir, '.hooks', 'pre-commit');
     writeFileSync(hookPath, '#!/bin/sh\nexit 0\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 1);
@@ -499,13 +499,13 @@ test('B4: core.hooksPath change in config is caught as config change and baselin
   try {
     const baseline = metaBaseline(dir, layout);
 
-    const extDir = mkdtempSync(join(tmpdir(), 'zc-b4-ext-'));
+    const extDir = mkTmp('zc-b4-ext-');
     git(dir, 'config', 'core.hooksPath', extDir.replace(/\\/g, '/'));
     const plantedHook = join(dir, '.git', 'hooks', 'pre-commit');
     mkdirSync(dirname(plantedHook), { recursive: true });
     writeFileSync(plantedHook, '#!/bin/sh\nexit 0\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     const cfgEntry = entries.find((e) => e.area === 'config' && e.change === 'modified');
@@ -539,7 +539,7 @@ test('B5: alias appended to .git/config is restored byte for byte', () => {
     const origBytes = readFileSync(cfgPath);
     writeFileSync(cfgPath, Buffer.concat([origBytes, Buffer.from('[alias]\n\tst = !echo pwned\n')]));
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 1);
@@ -578,7 +578,7 @@ test('B6: baseline include file inside work tree hidden by gitignore is detected
 
     writeFileSync(localCfgPath, '[user]\n\tname = Modified\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 1);
@@ -595,7 +595,7 @@ test('B6: baseline include file inside work tree hidden by gitignore is detected
 test('B7: dangling baseline include target created outside private area is detected by checkMetaInert', () => {
   makeHome();
   const { dir } = makeRepo();
-  const tmpOutside = mkdtempSync(join(tmpdir(), 'zc-b7-ext-'));
+  const tmpOutside = mkTmp('zc-b7-ext-');
   const laterPath = join(tmpOutside, 'later.cfg');
   git(dir, 'config', 'include.path', laterPath.replace(/\\/g, '/'));
 
@@ -606,7 +606,7 @@ test('B7: dangling baseline include target created outside private area is detec
 
     writeFileSync(laterPath, '[core]\n\tfsmonitor = x\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
     assert.deepEqual(entries, []);
 
@@ -637,7 +637,7 @@ test('B8: info/exclude modified and info/attributes added are restored', () => {
     writeFileSync(excludePath, Buffer.concat([readFileSync(excludePath), Buffer.from('\n# appended line\n')]));
     writeFileSync(attrPath, '* text=auto\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     const modEntry = entries.find((e) => e.path.endsWith('exclude') && e.change === 'modified');
@@ -736,7 +736,7 @@ test('B10: fail-closed errors at baseline and unreadable hooks dir after phase',
       const baseline = metaBaseline(dir, layout);
       chmodSync(hooksDir, 0);
       try {
-        const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+        const saveDir = mkTmp('zc-ev-');
         const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
         const unreadable = entries.find((e) => e.change === 'unreadable' && e.area === 'hooks');
         assert.ok(unreadable, 'must return an unreadable entry');
@@ -796,7 +796,7 @@ test('B11: isPrivate with hand-built layout objects and segment/case rules', () 
 test('B12: not private hooks are detect only and evidence folder remains empty', () => {
   makeHome();
   const { dir } = makeRepo();
-  const extDir = mkdtempSync(join(tmpdir(), 'zc-b12-ext-'));
+  const extDir = mkTmp('zc-b12-ext-');
   writeFileSync(join(extDir, 'pre-commit'), '#!/bin/sh\nexit 0\n');
   git(dir, 'config', 'core.hooksPath', extDir.replace(/\\/g, '/'));
 
@@ -809,7 +809,7 @@ test('B12: not private hooks are detect only and evidence folder remains empty',
     writeFileSync(join(extDir, 'pre-commit'), '#!/bin/sh\nexit 1\n');
     writeFileSync(join(extDir, 'post-checkout'), '#!/bin/sh\necho new\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 2);
@@ -867,7 +867,7 @@ test('B14: checkMetaFiles does not write or delete through symlinked hooks dir',
     const baseline = metaBaseline(dir, layout);
     assert.equal(baseline.hooks.exists, false);
 
-    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim14-'));
+    const victimDir = mkTmp('zc-victim14-');
     const keepPath = join(victimDir, 'keep.txt');
     writeFileSync(keepPath, 'keep content\n');
 
@@ -878,7 +878,7 @@ test('B14: checkMetaFiles does not write or delete through symlinked hooks dir',
       return;
     }
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(entries.length, 1);
@@ -909,7 +909,7 @@ test('B15: checkMetaFiles does not write through symlinked hooks subdirectory', 
   try {
     const baseline = metaBaseline(dir, layout);
 
-    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim15-'));
+    const victimDir = mkTmp('zc-victim15-');
     writeFileSync(join(victimDir, 'victim.txt'), 'safe\n');
     const victimBefore = readdirSync(victimDir);
 
@@ -921,7 +921,7 @@ test('B15: checkMetaFiles does not write through symlinked hooks subdirectory', 
       return;
     }
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     const victimAfter = readdirSync(victimDir);
@@ -945,7 +945,7 @@ test('B16: checkMetaFiles does not write through symlinked info directory', (t) 
   try {
     const baseline = metaBaseline(dir, layout);
 
-    const victimDir = mkdtempSync(join(tmpdir(), 'zc-victim16-'));
+    const victimDir = mkTmp('zc-victim16-');
     const victimExclude = join(victimDir, 'exclude');
     writeFileSync(victimExclude, 'v');
 
@@ -958,7 +958,7 @@ test('B16: checkMetaFiles does not write through symlinked info directory', (t) 
       return;
     }
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.equal(readFileSync(victimExclude, 'utf8'), 'v');
@@ -988,7 +988,7 @@ test('B17: added directory tree restored flag and hooks dir entry', () => {
     mkdirSync(dDir, { recursive: true });
     writeFileSync(join(dDir, 'h'), '#!/bin/sh\nexit 0\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     assert.ok(entries.length > 0, 'must have entries');
@@ -1038,7 +1038,7 @@ test('B19: non-private config/info file is detect-only', () => {
   try {
     const baseline = metaBaseline(dir, layout);
 
-    const extFolder = mkdtempSync(join(tmpdir(), 'zc-b19-ext-'));
+    const extFolder = mkTmp('zc-b19-ext-');
     const extFile = join(extFolder, 'ext.cfg');
     writeFileSync(extFile, 'original content\n');
 
@@ -1052,7 +1052,7 @@ test('B19: non-private config/info file is detect-only', () => {
 
     writeFileSync(extFile, 'modified content\n');
 
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
 
     const modEntry = entries.find((e) => samePath(e.path, extFile));
@@ -1095,7 +1095,7 @@ function ancestorCase(t, { baselineFiles, victimFiles, mutate }) {
   pinLayout(dir, layout);
   try {
     const baseline = metaBaseline(dir, layout);
-    const victim = mkdtempSync(join(tmpdir(), 'zc-victim-anc-'));
+    const victim = mkTmp('zc-victim-anc-');
     for (const [rel, body] of Object.entries(victimFiles)) {
       if (rel.endsWith('/')) {
         mkdirSync(join(victim, rel), { recursive: true });
@@ -1113,7 +1113,7 @@ function ancestorCase(t, { baselineFiles, victimFiles, mutate }) {
     }
     if (mutate) mutate(victim);
     const before = treeSnapshot(victim);
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
     assert.deepEqual(treeSnapshot(victim), before);
     for (const e of entries.filter((x) => x.area === 'hooks')) {
@@ -1156,7 +1156,7 @@ test('B24: private hooks dir outside every layout root fails closed', () => {
   pinLayout(dir, layout);
   try {
     const baseline = metaBaseline(dir, layout);
-    const outside = mkdtempSync(join(tmpdir(), 'zc-b24-'));
+    const outside = mkTmp('zc-b24-');
     baseline.hooks = { ...baseline.hooks, private: true, dir: outside, exists: false, entries: [] };
     const added = join(outside, 'added');
     writeFileSync(added, 'a');
@@ -1196,7 +1196,7 @@ test('B28: POSIX directory name containing a backslash that becomes a symlink: v
   pinLayout(dir, layout);
   try {
     const baseline = metaBaseline(dir, layout);
-    const victim = mkdtempSync(join(tmpdir(), 'zc-victim-bs-'));
+    const victim = mkTmp('zc-victim-bs-');
     rmSync(bsDir, { recursive: true, force: true });
     try {
       symlinkSync(victim, bsDir, 'dir');
@@ -1205,7 +1205,7 @@ test('B28: POSIX directory name containing a backslash that becomes a symlink: v
       return;
     }
     const before = treeSnapshot(victim);
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
     assert.deepEqual(treeSnapshot(victim), before);
     const removed = entries.find((e) => e.change === 'removed');
@@ -1243,7 +1243,7 @@ function hardlinkCase(t, { name, baseBody, baseMode, victimBody, victimMode, cha
       t.skip(`hard link creation failed: ${err.message}`);
       return;
     }
-    const saveDir = mkdtempSync(join(tmpdir(), 'zc-ev-'));
+    const saveDir = mkTmp('zc-ev-');
     const entries = checkMetaFiles(dir, layout, baseline, { saveDir });
     assert.equal(readFileSync(victim, 'utf8'), victimBody);
     assert.equal(lstatSync(victim).mode & 0o777, victimMode);
@@ -1287,7 +1287,7 @@ test('B32: hard-linked modified config/info file is not overwritten in place', (
     const target = join(dir, '.git', 'zc-b32-info');
     writeFileSync(target, 'orig');
     baseline.files = [...baseline.files, { area: 'info', path: target, private: true, bytes: Buffer.from('orig') }];
-    const vd = mkdtempSync(join(tmpdir(), 'zc-victim-b32-'));
+    const vd = mkTmp('zc-victim-b32-');
     const victim = join(vd, 'victim');
     writeFileSync(victim, 'PRECIOUS');
     rmSync(target);
@@ -1322,11 +1322,11 @@ test('A10: the no-hooks directory is per project, under the project state folder
 test('A11: restoreIdentity refuses to write through a hard link', (t) => {
   makeHome();
   const { dir: main } = makeRepo();
-  const wt = mkdtempSync(join(tmpdir(), 'zc-wt11-'));
+  const wt = mkTmp('zc-wt11-');
   git(main, 'worktree', 'add', wt, '-b', 'wt11');
   const layout = gitLayout(wt);
   const dotGit = join(wt, '.git');
-  const outside = mkdtempSync(join(tmpdir(), 'zc-out11-'));
+  const outside = mkTmp('zc-out11-');
   const victim = join(outside, 'victim');
   overwriteText(dotGit, 'gitdir: /bogus/decoy\n');
   writeFileSync(victim, 'PRECIOUS');
@@ -1340,7 +1340,7 @@ test('A11: restoreIdentity refuses to write through a hard link', (t) => {
   const changes = checkIdentity(wt, layout);
   assert.equal(changes.length, 1);
   assert.equal(changes[0].restorable, true);
-  const saveDir = mkdtempSync(join(tmpdir(), 'save11-'));
+  const saveDir = mkTmp('save11-');
   const out = restoreIdentity(wt, layout, changes, { saveDir });
   assert.equal(out[0].restored, false);
   assert.match(out[0].detail, /hard link/);
@@ -1402,7 +1402,7 @@ test('C3: changed content of a baseline-flagged file is restored and the changed
   git(dir, 'update-index', '--assume-unchanged', 'README.md');
   const base = flagsBaseline(dir);
   writeFileSync(join(dir, 'README.md'), 'worker was here\n');
-  const saveDir = mkdtempSync(join(tmpdir(), 'save-c3-'));
+  const saveDir = mkTmp('save-c3-');
   const out = checkFlags(dir, base, { saveDir });
   assert.deepEqual(out.map((e) => [e.path, e.change, e.restorable, e.restored]), [['README.md', 'modified', true, true]]);
   assert.equal(readFileSync(join(dir, 'README.md'), 'utf8'), 'mine\n');
@@ -1438,7 +1438,7 @@ test('C6: a symlinked flagged path is never written through', (t) => {
   const { dir } = makeRepo();
   git(dir, 'update-index', '--skip-worktree', 'README.md');
   const base = flagsBaseline(dir);
-  const outside = mkdtempSync(join(tmpdir(), 'zc-out-c6-'));
+  const outside = mkTmp('zc-out-c6-');
   const victim = join(outside, 'victim');
   writeFileSync(victim, 'PRECIOUS');
   rmSync(join(dir, 'README.md'));
@@ -1448,7 +1448,7 @@ test('C6: a symlinked flagged path is never written through', (t) => {
     t.skip(`symlink creation failed: ${err.message}`);
     return;
   }
-  const out = checkFlags(dir, base, { saveDir: mkdtempSync(join(tmpdir(), 'save-c6-')) });
+  const out = checkFlags(dir, base, { saveDir: mkTmp('save-c6-') });
   assert.equal(out.find((e) => e.change === 'modified').restored, false);
   assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS');
 });

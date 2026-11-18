@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import * as accounts from '../src/accounts.mjs';
@@ -16,9 +16,12 @@ export function git(cwd, ...args) {
   return r.stdout;
 }
 
+/** Temp dir in canonical form: Windows CI hands out 8.3 short names (RUNNER~1) that git never reports. */
+export const mkTmp = (prefix) => realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
+
 /** Fresh git repo with one commit and a zc config whose verify command always passes. */
 export function makeRepo(configExtra = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'zc-repo-'));
+  const dir = mkTmp('zc-repo-');
   git(dir, 'init', '-q', '-b', 'main');
   git(dir, 'config', 'user.email', 't@example.com');
   git(dir, 'config', 'user.name', 'Test');
