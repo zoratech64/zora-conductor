@@ -8,6 +8,8 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+## [0.2.0-alpha.3] - 2026-11-18
+
 ### Added
 
 - Git metadata integrity (hardening ZCH-011). `zc` resolves the repository's git directories once per dispatch and pins and hardens every git call it makes (no fsmonitor, an empty per-project hooks directory, no external diff or text conversion, timeouts on inert calls). Before the worker it records hooks, config files and includes, `info/*` files, effective config, refs and the `skip-worktree`/`assume-unchanged` flags (with copies of flagged files); after the worker and after verify it repairs what it safely can and ends the run `SCOPE_VIOLATION` (`gitMeta` entries, metadata paths in `forbidden`), or `NEEDS_HUMAN` with `gitMetaUnrestored: true` when it cannot (changed refs, shared hooks of a linked worktree, a replaced git directory). Hard-linked and symlink-crossing targets are never written in place.
@@ -21,7 +23,8 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 ### Changed
 
 - A change to any `.gitignore` or `.gitattributes` is in scope only if its exact path is listed in `allowed`; after a rollback `zc` reports paths the rollback made visible (`revealedAfterRollback`) and treats the rollback as incomplete.
-- Reset hints in quota messages are believed only if they are absolute times with a timezone or relative times, and lie at most `defaults.maxCooldownMinutes` ahead; anything else falls back to the default cooldown. A weekly reset hint is therefore capped at 24 hours by default. **Behavioural change:** a git call that times out or a hooks directory that cannot be prepared during a dispatch now ends the run `NEEDS_HUMAN` with a `result.json` instead of throwing.
+- Reset hints in quota messages are believed only if they are absolute times with a timezone or relative times, and lie at most `defaults.maxCooldownMinutes` ahead; anything else falls back to the default cooldown. A weekly reset hint is therefore capped at 24 hours by default.
+- **Behavioural change:** a git call that times out or a hooks directory that cannot be prepared during a dispatch now ends the run `NEEDS_HUMAN` with a `result.json` instead of throwing.
 - The no-hooks directory is per project (`<state>/projects/<project>/no-hooks`), not shared across projects.
 - Decision (alpha.3): automatic switching to the next account stays as it is in this pre-release; whether it is removed is a Gate 1 product decision.
 - Worker prompts always keep the ECC `security.md` and `testing.md` rule files: past `ecc.maxChars`, other rule files are dropped first, and if those two files alone do not fit, `zc dispatch` (and `zc doctor`) report an error instead of leaving them out.
@@ -31,6 +34,7 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 - The git metadata checks are lstat-then-write, not race-free. A process that swaps a path for a symlink or hard link between the check and the write can redirect it. This includes the evidence copy of a flagged file, which can follow a symlink swapped in at the last moment and copy that file's content into the run folder (a read, not a write outside the run folder). Evidence copies have no size cap.
 - Index-flag protection compares file content only. A mode change (chmod) on an `assume-unchanged` or `skip-worktree` file is neither detected nor restored. A flagged file over 2 MB, or flagged files over 8 MB in total, stop a dispatch before the worker starts (fail closed). After a phase, `checkFlags` applies only the 2 MB per-file limit, with no 8 MB total.
+- Gitignored files are not inspected: `zc` reads changes with `git status` without `--ignored`, so a worker or verify command that writes a gitignored file (for example an ignored `.env`) is not seen by the scope, forbidden-path or integrity checks. This predates alpha.3.
 - The git metadata walk reads and hashes names and content through a symlinked ancestor of a hooks directory (a read, not a write or delete); restores never follow it.
 - Linked-worktree shared hooks, changed refs and a replaced git directory are detect-only (`NEEDS_HUMAN`). Hooks files that are hard-linked (more than one link) are never restored in place.
 - If the worker process itself fails to start or throws, no `result.json` is written, so git metadata it changed is not flagged for the next dispatch.

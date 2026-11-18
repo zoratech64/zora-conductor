@@ -109,12 +109,12 @@ zc has six layers, from weakest to strongest:
 
 1. **Prompt level.** The task, `allowed` and `forbidden` lists and the execution contract in the worker prompt are advice. A model can ignore them.
 2. **Tool permission.** `worker.permissions` limits the worker's tools while it runs. zc does not enforce it; it depends on `agy`.
-3. **Git-based repository enforcement.** After the worker and again after verify, zc compares the repository with what it recorded: file contents, `.zc/`, HEAD and branch, scope, and git metadata. Changes it can undo safely are undone and saved; a run with such changes never ends `OK`. This covers effects inside the work tree and the git directories only.
+3. **Git-based repository enforcement.** After the worker and again after verify, zc compares the repository with what it recorded: file contents, `.zc/`, HEAD and branch, scope, and git metadata. Changes it can undo safely are undone and saved; a run with such changes never ends `OK`. This covers tracked and untracked, non-ignored files in the work tree and the git directories only. Gitignored files are not inspected.
 4. **Process isolation.** The worker is a separate `agy` process with a time limit, killed as a tree on timeout, and one project lock. It runs as you, with your environment. A verify command also runs as you.
 5. **OS isolation.** None. zc is a guard rail, not a sandbox. Code run by verify can read your files, environment and network.
 6. **Credential isolation.** Each worker account has its own profile folder outside the repository. This depends on the `agy` version.
 
-So zc guarantees that no change a worker or verify command makes inside the repository can reach `OK` without passing the scope and integrity checks, and that what it catches is saved and, where safe, undone. It guarantees nothing about effects outside the repository, about global git config, about a process left running after its phase, or about a swap of a path between a check and the write (the checks are not race-free). Use a disposable user, container or machine for untrusted repositories.
+So zc guarantees that no change a worker or verify command makes to tracked or untracked, non-ignored files in the repository, to `.zc/`, to HEAD and the branch, or to git metadata can reach `OK` without passing the scope and integrity checks, and that what it catches is saved and, where safe, undone. It guarantees nothing about gitignored files (they are not inspected, so an ignored `.env` written by a worker is not seen), about effects outside the repository, about global git config, about a process left running after its phase, or about a swap of a path between a check and the write (the checks are not race-free). Use a disposable user, container or machine for untrusted repositories.
 
 ## What is and is not verified
 
@@ -127,7 +127,7 @@ Verified here (Linux, the automated test suite plus an end-to-end CLI run): acco
 3. Windows. The code paths for `.cmd` launchers, `taskkill` and `%LOCALAPPDATA%` are written but untested; CI runs the suite on `windows-latest`.
 4. Loading the plugin in a live Claude Code session (the manifest validates; the skill's behaviour in a real session has not been exercised).
 
-Known limits of the git metadata checks (details in [CHANGELOG.md](CHANGELOG.md#unreleased)): they are not race-free, including an evidence-copy race on flagged files that can copy a swapped-in symlink target's content into the run folder; a chmod on an `assume-unchanged` or `skip-worktree` file is not detected; flagged files over 2 MB (8 MB in total) stop a dispatch; shared hooks of a linked worktree, changed refs and a replaced git directory are reported, not repaired.
+Known limits of the git metadata checks (details in [CHANGELOG.md](CHANGELOG.md#020-alpha3---2026-11-18)): they are not race-free, including an evidence-copy race on flagged files that can copy a swapped-in symlink target's content into the run folder; a chmod on an `assume-unchanged` or `skip-worktree` file is not detected; flagged files over 2 MB (8 MB in total) stop a dispatch; gitignored files are not inspected; shared hooks of a linked worktree, changed refs and a replaced git directory are reported, not repaired.
 
 Other limits: only the `agy` adapter exists (a plain Gemini CLI adapter is the natural next one); workers run strictly serially; Flutter code generation (`build_runner`) must be run by the manager between tasks because workers cannot run commands by default.
 
