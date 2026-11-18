@@ -158,7 +158,7 @@ test('D10: a linked worktree: shared hooks are detect-only, a rewritten .git poi
   const pointer = readFileSync(join(wt, '.git'), 'utf8');
   const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a', '.git': 'gitdir: /nonexistent/decoy\n' } });
   const r1 = await dispatch({ root: wt, task: scoped(), config });
-  assert.equal(r1.status, 'SCOPE_VIOLATION');
+  assert.equal(r1.status, "SCOPE_VIOLATION", JSON.stringify([r1.nextAction, r1.attempts]));
   assert.equal(readFileSync(join(wt, '.git'), 'utf8'), pointer);
 
   setScenario(g1, { mode: 'ok', write: { 'src/b.txt': 'b' } });
