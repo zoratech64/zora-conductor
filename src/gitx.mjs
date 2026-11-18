@@ -3,7 +3,7 @@ import {
   copyFileSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import { stateRoot } from './paths.mjs';
+import { projectState } from './paths.mjs';
 import { captureState } from './snapshot.mjs';
 
 export function inertTimeoutMs() {
@@ -11,10 +11,10 @@ export function inertTimeoutMs() {
   return Number.isInteger(envVal) && envVal > 0 ? envVal : 60000;
 }
 
-export const noHooksDir = () => join(stateRoot(), 'no-hooks');
+export const noHooksDir = (root) => join(projectState(root), 'no-hooks');
 
-function prepareNoHooksDir() {
-  const dir = noHooksDir();
+function prepareNoHooksDir(root) {
+  const dir = noHooksDir(root);
   try {
     mkdirSync(dir, { recursive: true });
     if (readdirSync(dir).length > 0) {
@@ -22,11 +22,14 @@ function prepareNoHooksDir() {
       mkdirSync(dir, { recursive: true });
     }
     if (readdirSync(dir).length > 0) {
-      throw new Error(`hooks directory is not empty: ${dir}`);
+      throw Object.assign(new Error(`hooks directory is not empty: ${dir}`), { code: 'ZC_NO_HOOKS_DIR' });
     }
   } catch (error) {
-    if (error.message?.includes(dir)) throw error;
-    throw new Error(`cannot create or empty hooks directory "${dir}": ${error.message}`);
+    const wrapped = error.code === 'ZC_NO_HOOKS_DIR'
+      ? error
+      : new Error(`cannot create or empty hooks directory "${dir}": ${error.message}`);
+    wrapped.code = 'ZC_NO_HOOKS_DIR';
+    throw wrapped;
   }
   return dir;
 }
@@ -77,7 +80,7 @@ export function pathStates(root, paths) {
 export const dirtyState = (root) => pathStates(root, changedPaths(statusEntries(root)));
 
 export function git(root, args, { allowFail = false, input, timeoutMs = 0 } = {}) {
-  prepareNoHooksDir();
+  const hooksDir = prepareNoHooksDir(root);
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (!/^GIT_/i.test(key)) {
@@ -93,7 +96,7 @@ export function git(root, args, { allowFail = false, input, timeoutMs = 0 } = {}
   const argv = [
     '-c', 'core.quotepath=off',
     '-c', 'core.fsmonitor=false',
-    '-c', `core.hooksPath=${noHooksDir()}`,
+    '-c', `core.hooksPath=${hooksDir}`,
     ...args
   ];
   const result = spawnSync('git', argv, {

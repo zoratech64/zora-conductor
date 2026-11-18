@@ -50,6 +50,7 @@ import {
   statusEntries,
   unpinLayout
 } from '../src/gitx.mjs';
+import { projectState } from '../src/paths.mjs';
 import { addFake, calls, git, makeHome, makeRepo, task } from './helpers.mjs';
 
 function hasSh() {
@@ -332,7 +333,7 @@ test('A8: files planted in noHooksDir are not executed and are cleaned before gi
   const { dir } = makeRepo();
   writeFileSync(join(dir, 'README.md'), 'dirty content\n');
 
-  const hooksDir = noHooksDir();
+  const hooksDir = noHooksDir(dir);
   mkdirSync(hooksDir, { recursive: true });
   const marker = join(dir, 'hook8.marker').replace(/\\/g, '/');
   const script = join(hooksDir, 'post-index-change');
@@ -341,7 +342,7 @@ test('A8: files planted in noHooksDir are not executed and are cleaned before gi
 
   statusEntries(dir);
   assert.ok(!existsSync(marker), 'planted hook marker should not exist');
-  assert.equal(readdirSync(noHooksDir()).length, 0, 'noHooksDir must be empty after git invocation');
+  assert.equal(readdirSync(noHooksDir(dir)).length, 0, 'noHooksDir must be empty after git invocation');
 });
 
 test('A9: inert git call times out when encountering a blocking fifo', (t) => {
@@ -1302,4 +1303,59 @@ test('B32: hard-linked modified config/info file is not overwritten in place', (
   } finally {
     unpinLayout(dir);
   }
+});
+
+test('A10: the no-hooks directory is per project, under the project state folder', () => {
+  makeHome();
+  const { dir: a } = makeRepo();
+  const { dir: b } = makeRepo();
+  assert.notEqual(noHooksDir(a), noHooksDir(b));
+  assert.equal(noHooksDir(a), join(projectState(a), 'no-hooks'));
+  statusEntries(a);
+  assert.ok(existsSync(noHooksDir(a)));
+  assert.ok(!existsSync(noHooksDir(b)), 'a git call in project A must not create the folder of project B');
+});
+
+test('A11: restoreIdentity refuses to write through a hard link', (t) => {
+  makeHome();
+  const { dir: main } = makeRepo();
+  const wt = mkdtempSync(join(tmpdir(), 'zc-wt11-'));
+  git(main, 'worktree', 'add', wt, '-b', 'wt11');
+  const layout = gitLayout(wt);
+  const dotGit = join(wt, '.git');
+  const outside = mkdtempSync(join(tmpdir(), 'zc-out11-'));
+  const victim = join(outside, 'victim');
+  overwriteText(dotGit, 'gitdir: /bogus/decoy\n');
+  writeFileSync(victim, 'PRECIOUS');
+  rmSync(dotGit);
+  try {
+    linkSync(victim, dotGit);
+  } catch (err) {
+    t.skip(`hard link creation failed: ${err.message}`);
+    return;
+  }
+  const changes = checkIdentity(wt, layout);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].restorable, true);
+  const saveDir = mkdtempSync(join(tmpdir(), 'save11-'));
+  const out = restoreIdentity(wt, layout, changes, { saveDir });
+  assert.equal(out[0].restored, false);
+  assert.match(out[0].detail, /hard link/);
+  assert.equal(readFileSync(victim, 'utf8'), 'PRECIOUS');
+});
+
+test('A12: a git failure after the worker (no-hooks dir unusable) ends NEEDS_HUMAN with a result.json', async () => {
+  const home = makeHome();
+  const { dir, config } = makeRepo();
+  addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'a' } });
+  const hooks = noHooksDir(dir);
+  const script = `const fs=require('fs');fs.rmSync(${JSON.stringify(hooks)},{recursive:true,force:true});fs.writeFileSync(${JSON.stringify(hooks)},'x');`;
+  const t = task('id: T-a12\nallowed:\n  - src/');
+  t.meta.verify = [[process.execPath, '-e', script]];
+  const r = await dispatch({ root: dir, task: t, config });
+  assert.equal(r.status, 'NEEDS_HUMAN');
+  assert.match(r.nextAction, /git/);
+  assert.ok(existsSync(join(r.runDir, 'result.json')));
+  assert.ok(!('workerState' in JSON.parse(readFileSync(join(r.runDir, 'result.json'), 'utf8'))), 'no git state recorded');
+  assert.ok(home);
 });

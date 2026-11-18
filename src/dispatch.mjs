@@ -103,7 +103,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
   const finish = (status, exitCode, extra = {}, checkedState) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
-    if (checkedState !== undefined) {
+    if (checkedState === false) {
+      // the repository cannot be inspected safely: record no state
+    } else if (checkedState !== undefined) {
       result.workerState = checkedState;
     } else {
       try { result.workerState = G.dirtyState(root); } catch { /* not a git repo yet: nothing to record */ }
@@ -479,6 +481,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     return finish('FAILED', EXIT.FAILED, {
       nextAction: `gave up after ${config.defaults.maxAttempts} worker attempts; see the attempts list and the run folder.`
     });
+  } catch (error) {
+    if (error?.code !== 'ZC_GIT_TIMEOUT' && error?.code !== 'ZC_NO_HOOKS_DIR') throw error;
+    return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+      nextAction: `a git call could not run safely (${error.message}). Check the repository by hand before running git commands in it; the working tree was not rolled back.`
+    }, false);
   } finally {
     G.unpinLayout(root);
     release();

@@ -21,6 +21,9 @@ export function overwriteText(path, text) {
     throw error;
   }
   try {
+    if (fstatSync(fd).nlink > 1) {
+      throw new Error('refusing in-place write: target has multiple hard links');
+    }
     ftruncateSync(fd, 0);
     writeSync(fd, text, 0, 'utf8');
   } finally {
