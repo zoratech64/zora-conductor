@@ -5,7 +5,7 @@ import { checkAccount, findAgy, hasTokenFile, isolationMode, loginAccount } from
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
-import { acceptRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
+import { acceptRun, ackRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
 import * as G from './gitx.mjs';
 import { configPath, stateRoot } from './paths.mjs';
 import { run } from './proc.mjs';
@@ -23,6 +23,7 @@ Project (run inside the git repo):
   zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result (task declares cause:)
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
   zc accept [<runId>]                     stage only a verified run's files (never commits)
+  zc ack <runId>                          record that you checked the git metadata a run could not repair
   zc runs                                 recent runs
   zc status                               accounts, cooldowns, latest run
   zc doctor                               check this machine and project
@@ -339,6 +340,12 @@ export async function main(argv) {
           return 3;
         }
         console.log(`zc: ${out.rolledBack ? `discarded ${out.restored.length} file(s)` : 'nothing discarded'} (run ${out.runId})${out.note ? ` - ${out.note}` : ''}`);
+        return 0;
+      }
+      case 'ack': {
+        const opts = parseArgs(rest);
+        const out = ackRun({ root: projectRoot(opts), runId: opts._[0] });
+        console.log(`zc: acknowledged git metadata of run ${out.runId}`);
         return 0;
       }
       case 'accept': {

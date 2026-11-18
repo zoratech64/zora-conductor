@@ -44,13 +44,20 @@ export function isForbidden(path, extra = []) {
   return matches(target, [...DEFAULT_FORBIDDEN, ...extra]);
 }
 
+const SCOPE_SENSITIVE = /(^|\/)\.git(ignore|attributes)$/i;
+
+/** .gitignore and .gitattributes decide what git shows and which filters run, so a directory or glob is not enough. */
+const inAllowed = (path, allowed) => (SCOPE_SENSITIVE.test(normalize(path))
+  ? allowed.some((g) => normalize(g) === normalize(path))
+  : matches(path, allowed));
+
 /** Split changed paths into in-scope, forbidden, and outside the task's allow-list. */
 export function partitionByScope(paths, allowed, extraForbidden = []) {
   const forbidden = [];
   const outOfScope = [];
   for (const path of paths) {
     if (isForbidden(path, extraForbidden)) forbidden.push(path);
-    else if (!matches(path, allowed)) outOfScope.push(path);
+    else if (!inAllowed(path, allowed)) outOfScope.push(path);
   }
   return { forbidden, outOfScope };
 }

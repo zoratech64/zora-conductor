@@ -5,6 +5,7 @@ import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
 import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
 import { gitLayout } from './gitmeta.mjs';
+import { runGate, takeMetaBaseline } from './gitmeta-gate.mjs';
 import * as G from './gitx.mjs';
 import { lockFile, runsDir } from './paths.mjs';
 import { attemptMetrics } from './metrics.mjs';
@@ -36,7 +37,17 @@ export function listRuns(root, limit = 10) {
     .filter(Boolean);
 }
 
-export const getRun = (root, id) => readJson(join(runsDir(root), id, 'result.json'), null);
+/** Same repository layout: git directories, pointer files and directory identity all equal. */
+const sameLayout = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Newest run that left unrepaired git metadata nobody acknowledged. Runs that merely refused to start do not
+ * carry the flag, so they are skipped, however many pile up: every run is scanned.
+ */
+const pendingMetaRun = (root, exceptId = null) =>
+  listRuns(root, Infinity).find((r) => r.gitMetaUnrestored && !r.gitMetaAcknowledged && r.runId !== exceptId) ?? null;
+
+export const getRun = (root, id) => (/^[\w-]+$/.test(String(id)) ? readJson(join(runsDir(root), id, 'result.json'), null) : null);
 
 /**
  * Combine project and task verification commands. Project commands always run first in order;
@@ -101,10 +112,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   };
   result.eccRules = eccRules;
   result.verifyPlan = verifyCmds.map((argv) => argv.join(' '));
+  let metaBlocked = Boolean(pendingMetaRun(root, id));
   const finish = (status, exitCode, extra = {}, checkedState) => {
     Object.assign(result, { status, exitCode, finishedAt: new Date().toISOString() }, extra);
-    if (checkedState === false) {
-      // the repository cannot be inspected safely: record no state
+    if (checkedState === false || metaBlocked) {
+      // the repository cannot be inspected safely (or unrepaired metadata is pending): run no git, record no state
     } else if (checkedState !== undefined) {
       result.workerState = checkedState;
     } else {
@@ -128,6 +140,14 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   }
 
   try {
+    const last = pendingMetaRun(root, id);
+    metaBlocked = Boolean(last);
+    if (last) {
+      // No git command may run here: the metadata that run left is still unrepaired, so record no state.
+      return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+        nextAction: `no worker was started: run ${last.runId} left git metadata that zc could not repair. Check the items it lists by hand, then run \`zc ack ${last.runId}\`.`
+      }, false);
+    }
     let layout;
     try {
       layout = gitLayout(root);
@@ -185,6 +205,34 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     } catch (error) {
       return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: error.message });
     }
+    let metaBase;
+    try {
+      metaBase = takeMetaBaseline(root, layout);
+    } catch (error) {
+      return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+        nextAction: `no worker was started: zc could not record the git metadata safely (${error.message}). Fix or remove what it names, then dispatch again.`
+      });
+    }
+    /** Run the integrity gate for one untrusted phase; entries with restored === false need a human. */
+    const metaGate = (phase, n) => {
+      const saveDir = join(runDir, phase === 'verify' ? `git-meta-violations-verify-${n}` : `git-meta-violations-${n}`);
+      try {
+        return runGate(root, layout, metaBase, { saveDir });
+      } catch (error) {
+        return [{ area: 'git', path: '.git', change: 'unreadable', restorable: false, restored: false, detail: error?.message ?? String(error) }];
+      }
+    };
+    const metaStop = (entries, phase, extra = {}) => finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+      ...extra, phase, gitMeta: entries, gitMetaUnrestored: true,
+      nextAction: `git metadata changed during the ${phase} phase and could not be fully repaired: ${entries.filter((e) => !e.restored).map((e) => `${e.path} (${e.change}${e.detail ? `: ${e.detail}` : ''})`).join(', ')}. ` +
+        (entries.some((e) => e.area === 'refs') ? 'If the worker moved HEAD, a branch or a tag, nothing was rolled back automatically; inspect with `git reflog`. ' : '') +
+        `Evidence is in ${join(runDir, phase === 'verify' ? 'git-meta-violations-verify-<n>' : 'git-meta-violations-<n>')}. Do not run git commands in this repository until you have checked these items by hand, then \`zc ack ${id}\`.`
+    }, false);
+    /** Paths made visible by a rollback (for example by a rolled-back .gitignore) that were not part of the result. */
+    const revealedAfterRollback = (before) => {
+      const known = new Set([...G.changedPaths(before), ...Object.keys(baseline ?? {})]);
+      return G.changedPaths(G.statusEntries(root)).filter((p) => !known.has(p)).sort();
+    };
     const cooldownMs = config.defaults.cooldownMinutes * 60_000;
     const flakyMs = config.defaults.flakyCooldownMinutes * 60_000;
     const flakyRetried = new Set();
@@ -200,7 +248,12 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         return { saved: true, rolledBack: false, stuck: [] };
       }
       const rb = G.rollbackPaths(root, entries, state);
-      return { saved: true, rolledBack: rb.conflicts.length === 0, stuck: rb.conflicts.map((c) => `${c.path} (${c.reason})`) };
+      const revealed = revealedAfterRollback(entries);
+      return {
+        saved: true,
+        rolledBack: rb.conflicts.length === 0 && !revealed.length,
+        stuck: [...rb.conflicts.map((c) => `${c.path} (${c.reason})`), ...revealed.map((p) => `${p} (revealed after rollback)`)]
+      };
     };
 
     while (result.attempts.length < config.defaults.maxAttempts) {
@@ -254,6 +307,15 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       attempt.metrics = attemptMetrics(r.parsed, prompt);
       writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
 
+      // Git metadata first: nothing below may run a git command against hooks or config the worker changed.
+      const metaEntries = metaGate('worker', n);
+      if (metaEntries.length) attempt.gitMeta = metaEntries;
+      if (metaEntries.some((e) => !e.restored)) {
+        attempt.outcome = 'git-meta-not-restored';
+        return metaStop(metaEntries, 'worker', { account: account.id });
+      }
+      const metaPaths = metaEntries.map((e) => e.path);
+
       // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
       let zcViolations;
       try {
@@ -306,7 +368,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             nextAction: `the worker tried an action it is not allowed (${p.denied.join('; ') || 'a command'}) and stopped with nothing done. Make the task need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.`
           });
         }
-        if (!changed.length && !zcViolations.length) {
+        if (!changed.length && !zcViolations.length && !metaPaths.length) {
           return finish('NO_CHANGES', EXIT.FAILED, {
             nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
           });
@@ -328,13 +390,16 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         }
         result.inherited = inherited;
         const zcPaths = zcViolations.map((v) => v.path);
-        if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length) {
+        if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length || metaPaths.length) {
           G.savePartial(root, join(runDir, 'rejected'), entries);
-          const rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
+          let rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
+          const revealed = rolledBack ? revealedAfterRollback(entries) : [];
+          if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
           return finish('SCOPE_VIOLATION', EXIT.FAILED, {
             phase: 'worker',
             outOfScope: scope.outOfScope,
-            forbidden: [...scope.forbidden, ...zcPaths],
+            forbidden: [...scope.forbidden, ...zcPaths, ...metaPaths],
+            gitMeta: metaEntries,
             rolledBack,
             nextAction: rolledBack
               ? 'the worker edited files outside its allowed paths; its work was saved to the run folder and rolled back. Tighten the task or widen `allowed` deliberately.'
@@ -355,6 +420,14 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         const vStarted = Date.now();
         result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
         result.verifyDurationMs = Date.now() - vStarted;
+
+        const vMetaEntries = metaGate('verify', n);
+        if (vMetaEntries.length) attempt.gitMetaVerify = vMetaEntries;
+        if (vMetaEntries.some((e) => !e.restored)) {
+          attempt.outcome = 'git-meta-not-restored';
+          return metaStop(vMetaEntries, 'verify', { account: account.id });
+        }
+        const vMetaPaths = vMetaEntries.map((e) => e.path);
 
         let verifyZc;
         try {
@@ -395,14 +468,17 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         const vScope = partitionByScope(verifyChanged, allowed, config.forbidden);
         const vZcPaths = verifyZc.map((v) => v.path);
 
-        if (vScope.forbidden.length || vScope.outOfScope.length || vZcPaths.length) {
+        if (vScope.forbidden.length || vScope.outOfScope.length || vZcPaths.length || vMetaPaths.length) {
           G.savePartial(root, join(runDir, 'rejected-verify'), postEntries);
-          const rolledBack = resetAllowed && G.rollbackPaths(root, postEntries, G.dirtyState(root)).conflicts.length === 0;
+          let rolledBack = resetAllowed && G.rollbackPaths(root, postEntries, G.dirtyState(root)).conflicts.length === 0;
+          const revealed = rolledBack ? revealedAfterRollback(postEntries) : [];
+          if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
           return finish('SCOPE_VIOLATION', EXIT.FAILED, {
             phase: 'verify',
             verifyChanged,
             outOfScope: vScope.outOfScope,
-            forbidden: [...vScope.forbidden, ...vZcPaths],
+            forbidden: [...vScope.forbidden, ...vZcPaths, ...vMetaPaths],
+            gitMeta: vMetaEntries,
             rolledBack,
             nextAction: rolledBack
               ? 'a verify command changed files outside the allowed paths (or .zc/); the whole result was saved to the run folder and rolled back. If your build or tests legitimately write these files, add them to `allowed` or .gitignore.'
@@ -501,7 +577,25 @@ export function rejectRun({ root, runId, force = false }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to reject (see `zc runs`)');
   const release = acquireLock(lockFile(root), { runId: `reject-${prev.runId}` });
+  let pinned = false;
   try {
+    if (prev.gitLayout) {
+      let current;
+      try {
+        current = gitLayout(root);
+      } catch (error) {
+        throw new Error(`refusing to reject run ${prev.runId}: the git layout cannot be verified (${error.message})`);
+      }
+      if (!sameLayout(prev.gitLayout, current)) {
+        throw new Error(`refusing to reject run ${prev.runId}, even with --force: the repository's git layout differs from the one the run recorded (git directory, pointer files or identity changed)`);
+      }
+      G.pinLayout(root, prev.gitLayout);
+      pinned = true;
+    }
+    const pending = pendingMetaRun(root);
+    if (pending && !force) {
+      throw new Error(`run ${pending.runId} ended with git metadata that zc could not repair (gitMetaUnrestored). Check the listed items by hand and run \`zc ack ${pending.runId}\`, or use --force to discard anyway`);
+    }
     const entries = G.statusEntries(root);
     if (!entries.length) return { runId: prev.runId, rolledBack: false, restored: [], conflicts: [], note: 'working tree already clean' };
     if (!prev.workerState && !force) {
@@ -516,6 +610,25 @@ export function rejectRun({ root, runId, force = false }) {
     G.savePartial(root, join(prev.runDir, 'rejected-manual'), entries);
     const rb = G.rollbackPaths(root, entries, expected);
     return { runId: prev.runId, rolledBack: rb.conflicts.length === 0, restored: rb.restored, conflicts: rb.conflicts };
+  } finally {
+    if (pinned) G.unpinLayout(root);
+    release();
+  }
+}
+
+/**
+ * Record that a person checked the items a gitMetaUnrestored run listed. Adds `gitMetaAcknowledged`
+ * (an ISO time) to that run's result.json and changes nothing else.
+ */
+export function ackRun({ root, runId }) {
+  const prev = runId ? getRun(root, runId) : pendingMetaRun(root);
+  if (!prev) throw new Error('no run to acknowledge (see `zc runs`)');
+  if (!prev.gitMetaUnrestored) throw new Error(`run ${prev.runId} has nothing to acknowledge (no unrepaired git metadata)`);
+  const release = acquireLock(lockFile(root), { runId: `ack-${prev.runId}` });
+  try {
+    const file = join(runsDir(root), prev.runId, 'result.json');
+    writeJsonAtomic(file, { ...readJson(file, prev), gitMetaAcknowledged: new Date().toISOString() });
+    return { runId: prev.runId, gitMetaAcknowledged: true };
   } finally {
     release();
   }
@@ -533,6 +646,10 @@ export function acceptRun({ root, runId, config = {} }) {
   if (!prev) throw new Error('no run to accept (see `zc runs`)');
   const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}` });
   try {
+    const pending = pendingMetaRun(root);
+    if (pending) {
+      throw new Error(`cannot accept run ${prev.runId}: run ${pending.runId} left git metadata that zc could not repair. Check the items it lists by hand, then run \`zc ack ${pending.runId}\``);
+    }
     if (prev.status !== 'OK') {
       throw new Error(`cannot accept run ${prev.runId}: status is ${prev.status} (only OK runs can be accepted)`);
     }
@@ -587,6 +704,8 @@ export function formatResult(r) {
   if (r.changed?.length) lines.push(`changed (${r.changed.length}): ${r.changed.slice(0, 15).join(', ')}${r.changed.length > 15 ? ', ...' : ''}`);
   if (r.outOfScope?.length) lines.push(`OUT OF SCOPE: ${r.outOfScope.join(', ')}`);
   if (r.forbidden?.length) lines.push(`FORBIDDEN: ${r.forbidden.join(', ')}`);
+  for (const e of r.gitMeta ?? []) lines.push(`git metadata ${e.restored ? 'repaired' : 'NOT repaired'}: ${e.path} (${e.area} ${e.change})`);
+  if (r.revealedAfterRollback?.length) lines.push(`REVEALED after rollback: ${r.revealedAfterRollback.join(', ')}`);
   for (const v of r.verify ?? []) lines.push(`verify ${v.ok ? 'PASS' : 'FAIL'}: ${v.cmd}${v.ok ? '' : `\n${v.tail}`}`);
   if (r.retryAfter) lines.push(`retry after: ${r.retryAfter}`);
   if (r.workerSummary) lines.push(`worker says: ${r.workerSummary.slice(0, 600)}`);
