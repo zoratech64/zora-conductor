@@ -197,7 +197,7 @@ test('test 3: 8 processes racing for a proven-stale project lease give exactly o
   }
 });
 
-test('test 4: a dispatcher killed with SIGKILL keeps its leases while the worker lives, they are reaped after it exits, and zc recover then works', { skip: process.platform === 'win32' && 'POSIX signals', timeout: 120000 }, async () => {
+test('test 4: a dispatcher killed with SIGKILL keeps its leases while the worker lives, they are reaped after it exits, and zc recover then works', { skip: process.platform !== 'linux' && 'needs /proc', timeout: 120000 }, async () => {
   const helpers = await import('./helpers.mjs');
   const { reserve } = await import('../src/reserve.mjs');
   const { recoverRun } = await import('../src/recover.mjs');
