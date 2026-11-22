@@ -14,6 +14,7 @@ import { networkFsType, registryDir } from './registry-path.mjs';
 const POSIX = process.platform !== 'win32';
 const KINDS = new Set(['account', 'project']);
 const BUSY_MS = 5000;
+const BEGIN_RETRY_MS = 30000;
 
 let sqliteModule;
 function sqlite() {
@@ -135,9 +136,20 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
   }
   let inTx = false;
 
+  /** BEGIN IMMEDIATE, retried (jittered, bounded) when other processes hold the write lock. */
+  function begin() {
+    const deadline = Date.now() + BEGIN_RETRY_MS;
+    for (;;) {
+      try { db.exec('BEGIN IMMEDIATE'); return; } catch (error) {
+        if (!/locked|busy/i.test(String(error.message)) || Date.now() > deadline) throw error;
+        pause(5 + Math.random() * 20);
+      }
+    }
+  }
+
   function withTx(fn) {
     if (inTx) return fn();
-    db.exec('BEGIN IMMEDIATE');
+    begin();
     inTx = true;
     try {
       const result = fn();
