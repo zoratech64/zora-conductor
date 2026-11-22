@@ -8,6 +8,7 @@ import { groupAlive, isAlive, processIdentity, scanProfileUsers } from '../src/p
 
 const LINUX = process.platform === 'linux';
 const linuxOnly = LINUX ? {} : { skip: 'needs /proc (Linux)' };
+const posixOnly = process.platform === 'win32' ? { skip: 'POSIX symlinks and paths' } : {};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const tmp = (prefix) => mkdtempSync(join(tmpdir(), prefix));
@@ -279,12 +280,12 @@ test('scanProfileUsers (fake /proc): readable old process using the profile is s
 
 test('scanProfileUsers (fake /proc): unreadable same-user process is unknown even if /proc/<pid> is root-owned; foreign user is skipped', () => {
   const root = tmp('zc-proc-');
-  for (const [pid, uid] of [[1001, process.getuid() ?? 0], [1002, (process.getuid() ?? 0) + 1]]) {
+  for (const [pid, uid] of [[1001, process.getuid?.() ?? 0], [1002, ((process.getuid?.() ?? 0) + 1)]]) {
     const dir = fakeProc(root, pid, { uid });
     rmSync(join(dir, 'environ'));
     mkdirSync(join(dir, 'environ'));
   }
-  const r = scanProfileUsers('/p/g1', { procRoot: root, platform: 'linux', selfPid: 0, uid: process.getuid() ?? 0 });
+  const r = scanProfileUsers('/p/g1', { procRoot: root, platform: 'linux', selfPid: 0, uid: process.getuid?.() ?? 0 });
   assert.deepEqual(r.unreadable, [1001]);
 });
 
@@ -299,7 +300,7 @@ test('scanProfileUsers (fake /proc): XDG_RUNTIME_DIR, trailing slash and non-ASC
   assert.deepEqual(b.pids.sort(), [1102, 1103]);
 });
 
-test('scanProfileUsers (fake /proc): symlinked profile dir resolves to its real path; deleted suffix still matches', () => {
+test('scanProfileUsers (fake /proc): symlinked profile dir resolves to its real path; deleted suffix still matches', posixOnly, () => {
   const root = tmp('zc-proc-');
   const real = tmp('zc-real-');
   const link = join(tmp('zc-link-'), 'g1');
