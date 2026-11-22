@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import {
-  copyFileSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync
+  chmodSync, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { projectState } from './paths.mjs';
@@ -13,23 +13,43 @@ export function inertTimeoutMs() {
 
 export const noHooksDir = (root) => join(projectState(root), 'no-hooks');
 
+const POSIX = process.platform !== 'win32';
+
+function hooksDirError(message) {
+  return Object.assign(new Error(message), { code: 'ZC_NO_HOOKS_DIR' });
+}
+
+/**
+ * The per-project empty directory used as core.hooksPath. It is created once (mkdir is idempotent, so
+ * concurrent processes never remove it from under each other) and checked on every call: a real directory
+ * that we own, with nothing in it. A planted regular file is unlinked one by one, before git runs, so it can
+ * never execute; anything else (a subdirectory, a link, a special file, a foreign owner) fails closed.
+ * Nothing here removes the directory itself or deletes recursively.
+ * shortcut: Windows has no owner or mode check here (no uid); it relies on the per-user state root. Revisit if zc is ever run for several users on one profile.
+ */
 function prepareNoHooksDir(root) {
   const dir = noHooksDir(root);
   try {
-    mkdirSync(dir, { recursive: true });
-    if (readdirSync(dir).length > 0) {
-      rmSync(dir, { recursive: true, force: true });
-      mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const info = lstatSync(dir);
+    if (!info.isDirectory()) throw hooksDirError(`hooks directory is not a directory: ${dir}`);
+    if (POSIX) {
+      if (info.uid !== process.getuid()) throw hooksDirError(`hooks directory is owned by another user: ${dir}`);
+      if ((info.mode & 0o022) !== 0) chmodSync(dir, 0o700); // ours and empty: no one else may add a hook to it
     }
-    if (readdirSync(dir).length > 0) {
-      throw Object.assign(new Error(`hooks directory is not empty: ${dir}`), { code: 'ZC_NO_HOOKS_DIR' });
+    for (const name of readdirSync(dir)) {
+      const entry = join(dir, name);
+      try {
+        if (!lstatSync(entry).isFile()) throw hooksDirError(`hooks directory holds something other than a plain file (${name}); remove it by hand: ${dir}`);
+        unlinkSync(entry);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error; // another process cleaned it first
+      }
     }
+    if (readdirSync(dir).length > 0) throw hooksDirError(`hooks directory is not empty: ${dir}`);
   } catch (error) {
-    const wrapped = error.code === 'ZC_NO_HOOKS_DIR'
-      ? error
-      : new Error(`cannot create or empty hooks directory "${dir}": ${error.message}`);
-    wrapped.code = 'ZC_NO_HOOKS_DIR';
-    throw wrapped;
+    if (error.code === 'ZC_NO_HOOKS_DIR') throw error;
+    throw hooksDirError(`cannot create or check hooks directory "${dir}": ${error.message}`);
   }
   return dir;
 }
