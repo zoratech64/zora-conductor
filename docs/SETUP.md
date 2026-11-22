@@ -90,12 +90,20 @@ Edit `.zc/config.json`:
 }
 ```
 
+Other `defaults` keys: `onLimit` (`reset` is the default; `continue` keeps a failed worker's edits for the next account; `handoff` does that only after zc has checked them and written a `handoff-n.md`, at most `maxHandoffs` (default 2) times), `maxLiveProjects` (2), `capacityWaitSeconds` (`[60, 180]`) and `networkWaitSeconds` (`[30, 120]`).
+
 `zc init` detects Flutter (`pubspec.yaml`) and Node/NestJS (`package.json`) and fills `verify` and `rulePacks` for you. Leave `ecc.path` empty to use the bundled rules. Then commit it:
 
 ```bash
 git add .zc && git commit -m "chore: add zc config"
 zc doctor
 ```
+
+## 5b. Machine-wide leases and the accounts store
+
+From this version on every dispatch takes an account lease and a project lease in a machine-wide registry. Check it with `zc registry status` and `zc status`. Old zc copies take no leases, so do not run them next to this version. To fence them out, run `zc registry activate` (a dry run) and then `zc registry activate --apply`; to go back, `zc registry downgrade --apply`. Both refuse while a legacy dispatcher is live or any process is using an account profile, back up `accounts.json` first and delete nothing. Every account must be attested (`zc account attest <id> --label <name>`) before it can be used; see [ACCOUNTS.md](ACCOUNTS.md).
+
+Never stop a running dispatch with `timeout`, a terminal close or `kill -9`. Ctrl-C is safe: the worker is stopped, partial work is saved and the run ends `INTERRUPTED` (exit 130). After a crash use `zc runs` and `zc recover`.
 
 ## 6. First run
 

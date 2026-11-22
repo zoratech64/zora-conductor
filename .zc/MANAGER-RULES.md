@@ -12,3 +12,7 @@
 - Keep `.zc/progress.md` current: one line the moment each task lands, not at the end.
 - The release target and its pass/fail items are in `.zc/RELEASE-ACCEPTANCE.md`. Write a task only if it closes a failing item there; put anything else in its deferred section. Changing that list needs the user's approval.
 - If the user corrects you, update `.zc/MANAGER-RULES.md` first, then act.
+- One live dispatch per project, and at most two projects dispatching at once until validated.
+- Never kill, `timeout`, or close the terminal of a running dispatch; Ctrl-C is the only safe way to stop one.
+- Never invoke older zc copies; they take no leases.
+- One Google account per profile: dispatch only attested accounts. The attestation is the user's claim; zc cannot verify it.

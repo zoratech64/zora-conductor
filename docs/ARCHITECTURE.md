@@ -9,8 +9,8 @@
 ## One dispatch
 
 ```
-guard      git repo, has a commit, tree clean (or equals the --repair run), task has allowed paths, lock taken
-loop       pick account (sticky, else least recently used among ready + not cooling)
+guard      git repo, has a commit, tree clean (or equals the --repair run), task has allowed paths, project lease taken
+loop       reserve an account lease (attested, not cooling, nobody using its profile); sticky, else least recently used
            run agy with the prompt on stdin; time limit enforced by zc (process tree killed)
            git metadata gate (hooks, config, flags, refs) → repaired = SCOPE_VIOLATION; not repairable = NEEDS_HUMAN
            .zc/ restored; HEAD/branch changed?  → NEEDS_HUMAN, no rollback (.zc/ and git metadata were already repaired)
@@ -20,18 +20,23 @@ loop       pick account (sticky, else least recently used among ready + not cool
                 verify commands fail       → VERIFY_FAILED (work kept for repair)
                 after verify: .zc/, HEAD and scope re-checked → SCOPE_VIOLATION / NEEDS_HUMAN (phase: verify)
                 else                       → OK (work left uncommitted for the manager)
-           failure?   save partial work to the run folder, roll back (onLimit=reset) or keep (continue)
+           failure?   save partial work to the run folder, roll back (onLimit=reset) or keep (continue, handoff)
                 quota → cooldown, next account     auth → needs-login, next     license → blocked, next
                 location → stop (NEEDS_HUMAN)      timeout → TIMEOUT            permission → DENIED
+                capacity / network → release the account, wait (60/180 s, 30/120 s, at most 2 per run), same account again
                 server/empty/unknown → rerun once on the same account, then cooldown, next
-none ready  NO_CAPACITY (exit 2, retryAfter) or NEEDS_HUMAN (nothing usable at all)
+                onLimit=handoff: checked partial work goes to the next account via handoff-n.md, else NEEDS_HUMAN
+none ready  NO_CAPACITY (exit 2, retryAfter / model-capacity), NETWORK (exit 2) or NEEDS_HUMAN (nothing usable at all)
+signal     SIGINT/SIGTERM/SIGHUP: worker group stopped (TERM, KILL after 5 s), leases kept unless the worker is proven gone, INTERRUPTED, exit 130
 ```
 
 Every run writes `result.json`, each attempt's prompt and raw event stream, and any saved partial work to `<state>/projects/<project>/runs/<runId>/`. It records `attempts[].metrics` and `verifyDurationMs`, with missing measurements set to `null`, never invented. A repair run also records `repairCause` (`{ kind, note }`) from the repair task's `cause` and `causeNote` front matter; `zc dispatch --repair` refuses a task without a valid `cause`.
 
 ## Invariants
 
-- Only one dispatch per project at a time (lock file, stale locks from dead processes are taken over).
+- Only one zc operation per project at a time: a `project:<key>` lease in the machine-wide registry. A stale lease is never taken over except by the proof-gated reconcile or `zc recover`. The old `dispatch.lock` file is only read (a live older dispatcher blocks, a dead or foreign one is ignored, nothing is deleted).
+- Only one worker per Google profile on the machine: an account lease keyed by the profile directory's device:inode (its real path is recorded with it), released only once the worker is proven gone.
+- Run records are written as `RUNNING` with the owner and worker identity when the dispatch starts. Statuses added since alpha.3: `INTERRUPTED` (exit 130), `ORPHAN` (derived, worker may live), `RECOVERED` (after `zc recover`), `NETWORK` (exit 2); `NO_CAPACITY` gained the reasons `model-capacity`, `all-reserved`, `max-projects`.
 - A rollback happens only after the tree was verified clean at the start, and only after the partial work is saved. `.zc/` is excluded from rollbacks.
 - In `--repair` mode the baseline is someone's in-progress work, so automatic rollback is switched off and failed attempts hand their work to the next account instead.
 - A repair is scope-checked on its own changes: files the repaired run's worker changed and zc scope-checked (if that run was OK or VERIFY_FAILED; files its verify commands wrote are not included) and that the repair leaves byte-for-byte unchanged are recorded in `result.inherited` and are not checked against the repair task's `allowed` paths. Forbidden paths are always checked. `zc accept` stages inherited files with the repair's own.
@@ -79,7 +84,7 @@ Commands and agents describe procedures that rely on tools workers do not have (
 - `zc accept` stages exactly the run's recorded paths after checking status OK, unchanged HEAD and unchanged contents; anything else is left alone; any mismatch stages nothing. It also refuses paths outside the task's `allowed`, forbidden paths, and paths not recorded as the worker's change (e.g. files written by verify commands); staging is a single all-or-nothing git call; it cannot stop edits made by other programs between its check and the stage. It also refuses, staging nothing, when files that are not the run's are already staged, so a following `git commit` contains only the run's files.
 - **Verification is additive.** Project `verify` always runs; task `verify` only adds commands; `result.json` `verifyPlan` lists the effective set.
 - **Protected `.zc/` must be restorable.** If a `.zc/` file is too large to snapshot (2 MB each, 32 MB total), no worker is started; if a worker change there cannot be restored, the run stops as `NEEDS_HUMAN`, never as a successful rollback.
-- **One lock for everything that changes the tree.** `dispatch`, `reject` and `accept` take the same project lock; it is released on every path, including errors.
+- **One lease for everything that changes the tree.** `dispatch`, `reject`, `accept`, `ack` and `recover` take the same project lease; it is released on every path, including errors, and kept (never guessed free) when a worker could still run.
 - **Repair compares contents**, not just file names: the tree must hash identically to the run being repaired.
 - **Durations** (task `minutes`, `--minutes`, `defaults.*Minutes`) must be finite numbers greater than 0 and at most 480; anything else is refused before a timer is armed.
 - **ECC**: one validator (`validateCatalog`) decides what a usable ECC folder is and is used by install, status, doctor and source selection. Installs are staged and swapped atomically and record provenance in `INSTALLED.json` (origin, requested ref, full commit, whether it tracks a moving branch). Assets load by path with a per-file byte limit (`ecc.assetMaxBytes`); the prompt budget (`ecc.assetMaxChars`) includes whole sections only and lists what was left out.
@@ -92,7 +97,7 @@ Commands and agents describe procedures that rely on tools workers do not have (
 
 ## Git metadata gate (v0.2.0-alpha.3)
 
-Hooks, config and index flags can run code or hide edits, and neither `workerState` nor the scope check sees them. So `zc` resolves the repository's git directories once per dispatch, pins every git call to them, and runs every git call hardened (no fsmonitor, an empty hooks directory per project, no external diff or text conversion, inert calls time out).
+Hooks, config and index flags can run code or hide edits, and neither `workerState` nor the scope check sees them. So `zc` resolves the repository's git directories once per dispatch, pins every git call to them, and runs every git call hardened (no fsmonitor, an empty hooks directory per project (created once, checked empty and owned on every call, never removed recursively), no external diff or text conversion, inert calls time out).
 
 - **Baseline** (before the worker): the `.git` entry and pointer files, the hooks directory, config files and their includes, `info/*` files, effective config, refs, and the `skip-worktree` / `assume-unchanged` flags with a copy of each flagged file. Anything unreadable, a symlink where a file or directory is expected, or over the size caps (2 MB per file, 8 MB total) stops the run as `NEEDS_HUMAN` before a worker starts.
 - **Gate** (after the worker and again after verify, before any other check): identity, then filesystem comparisons and private restores, then inert git comparisons, then index flags. Each step runs only if the previous ones were repaired. Changed items are saved to `git-meta-violations-<n>` (worker) or `git-meta-violations-verify-<n>` first.
