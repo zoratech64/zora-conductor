@@ -239,6 +239,3 @@ export function loginAccount(account) {
   });
 }
 
-/** Where agy keeps the OAuth token when file storage is honoured (agy 1.1.21; version-sensitive). */
-export const tokenFile = (profileDir) => join(profileDir, 'antigravity-cli', 'antigravity-oauth-token');
-export const hasTokenFile = (profileDir) => existsSync(tokenFile(profileDir));

@@ -40,3 +40,15 @@ A reset time in a message counts only if it is an absolute time with a timezone,
 ## Terms of use
 
 Rotating between accounts that are genuinely yours, such as separate paid plans or a team's seats, is ordinary use. Spreading one person's usage across many free accounts to avoid per-person limits may break the provider's terms. Check them for your plan before relying on this.
+
+## One Google account per profile (attestation)
+
+`zc` cannot tell whether two profiles are signed in with the same Google account. Checked with agy 1.5.3 in a throwaway HOME (help and changelog only): there is no `whoami`, `account`, `auth` or `status` command, nothing documents an identity output, and sign-in modes vary (Google login, `GEMINI_API_KEY`, `AGY_ADC_AUTH`). The only identity-bearing file is the OAuth token, which `zc` never opens, hashes, decodes or compares (a test fails if `src/` names it). `installation_id` is per profile install and says nothing about the Google account.
+
+So the rule is an operational restriction that you attest to, and `zc` enforces the attestation:
+
+- `zc account add <id> --label <name>` and `zc account attest <id> --label <name>` need a non-secret label (an alias is fine) and an explicit confirmation: type `one-google-account-per-profile` on a terminal, or pass `--confirm-unique-google-account` in scripts.
+- A label already attested on another account is refused (this catches typing and copy mistakes).
+- Accounts created before this rule start unattested and are never filled in automatically. Enforcement at dispatch (accounts without a valid, unique attestation are never selected) arrives with the account-lease change (MPW-004); until that ships, this is recorded and shown but not yet enforced.
+
+Limits, stated plainly: the attestation is a human claim that `zc` cannot verify. A false or deliberately different label defeats it. Two profiles on one Google account share one quota and break the one-lease-per-account guarantee. Sign-in modes other than Google login are not covered. If agy ever gains a supported identity command, that is a follow-up, not something to adopt silently.

@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import * as accounts from './accounts.mjs';
-import { checkAccount, findAgy, hasTokenFile, isolationMode, loginAccount } from './agy.mjs';
+import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
+import { requireAttestation } from './attest.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
@@ -30,7 +31,10 @@ Project (run inside the git repo):
   zc ecc install|status|list|search|show  browse the whole ECC catalog and install it (workers can be given any asset)
 
 Accounts (machine-global):
-  zc account add <id> [--no-login]        create an isolated profile and sign in
+  zc account add <id> --label <name> [--no-login] [--confirm-unique-google-account]
+                                          create an isolated profile and sign in
+  zc account attest <id> --label <name> [--confirm-unique-google-account]
+                                          record that this Google account is used in no other profile
   zc account login <id>                   sign in again
   zc account check [<id>]                 verify sign-in and read quota windows
   zc account list | reset <id> | remove <id>
@@ -75,14 +79,24 @@ function cmdInit(root) {
 
 async function cmdAccount(argv) {
   const [sub, id, ...rest] = argv;
-  const opts = parseArgs(rest, { bool: ['no-login'] });
+  const opts = parseArgs(rest, { bool: ['no-login', 'confirm-unique-google-account'] });
   switch (sub) {
     case 'add': {
-      if (!id) throw new Error('usage: zc account add <id>');
-      const account = accounts.addAccount(id);
+      if (!id) throw new Error('usage: zc account add <id> --label <name>');
+      accounts.preflightAttest(id, opts.label, { adding: true });
+      const identity = await requireAttestation(id, opts);
+      const account = accounts.addAccount(id, { identity });
       console.log(`zc: created profile ${account.profileDir}`);
       if (opts['no-login']) return;
       await signIn(account);
+      return;
+    }
+    case 'attest': {
+      if (!id || !accounts.getAccount(id)) throw new Error(id ? `unknown account "${id}"` : 'usage: zc account attest <id> --label <name>');
+      accounts.preflightAttest(id, opts.label, { adding: false });
+      const identity = await requireAttestation(id, opts);
+      accounts.attestAccount(id, identity.label);
+      console.log(`zc: ${id} attested as "${identity.label}" (a human claim; ZC cannot verify it)`);
       return;
     }
     case 'login': {
@@ -106,7 +120,7 @@ async function cmdAccount(argv) {
       accounts.removeAccount(id);
       console.log(`zc: removed ${id} (its profile folder was left on disk)`);
       return;
-    default: throw new Error('usage: zc account add|login|check|list|reset|remove');
+    default: throw new Error('usage: zc account add|attest|login|check|list|reset|remove');
   }
 }
 
@@ -130,8 +144,8 @@ async function verifyAccount(account) {
     accounts.updateAccount(account.id, { status: 'needs-login', holdReason: r.text.slice(0, 200) });
     console.log(`zc: ${account.id} NOT signed in — ${r.error || r.text || 'no output'}`);
   }
-  if (isolationMode() === 'none' && !hasTokenFile(account.profileDir)) {
-    console.log(`zc: warning — isolation is off and no token file was found inside ${account.profileDir}. If agy keeps its login in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md.`);
+  if (isolationMode() === 'none') {
+    console.log('zc: warning — isolation is off. If agy keeps its login in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md.');
   }
 }
 
@@ -143,7 +157,9 @@ function printAccounts() {
   for (const a of list) {
     const hold = (a.cooldownUntil || 0) > now ? ` cooling until ${fmtTime(a.cooldownUntil)} (${a.holdReason})` : a.holdReason && a.status !== 'ready' ? ` (${a.holdReason})` : '';
     const low = a.usage?.length ? ` quota>=${Math.min(...a.usage.map((l) => l.remainingPercent))}%` : '';
-    console.log(`${a.id === current ? '*' : ' '} ${a.id.padEnd(14)} ${a.status.padEnd(12)}${low}${hold}`);
+    const state = accounts.attestationStatus(a, list);
+    const who = state === 'attested' ? ` attested: ${a.identity.label}` : ` ${state.toUpperCase()}`;
+    console.log(`${a.id === current ? '*' : ' '} ${a.id.padEnd(14)} ${a.status.padEnd(12)}${low}${who}${hold}`);
   }
 }
 

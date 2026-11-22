@@ -1,4 +1,5 @@
 import { readJson, writeJsonAtomic } from './fsx.mjs';
+import { displayLabel, normalizeLabel } from './attest.mjs';
 import { accountsFile, profileDirFor } from './paths.mjs';
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,30}$/i;
@@ -10,10 +11,48 @@ export const listAccounts = () => Object.values(load().accounts).sort((a, b) => 
 export const getAccount = (id) => load().accounts[id] ?? null;
 export const currentId = () => load().currentId;
 
-export function addAccount(id, { adapter = 'agy', dir } = {}) {
+const labelOf = (account) => {
+  try { return account?.identity?.label ? normalizeLabel(account.identity.label) : null; } catch { return null; }
+};
+
+function assertLabelFree(state, id, identity) {
+  const wanted = normalizeLabel(identity.label);
+  const clash = Object.values(state.accounts).find((a) => a.id !== id && labelOf(a) === wanted);
+  if (clash) throw new Error(`label "${identity.label}" is already attested on account "${clash.id}"; one Google account per profile`);
+}
+
+/** 'attested' | 'unattested' | 'duplicate-label'. Dispatch enforcement is added with reserve() in MPW-004. */
+export function attestationStatus(account, list) {
+  const mine = labelOf(account);
+  if (!mine || account.identity.method !== 'manual') return 'unattested';
+  return list.some((a) => a.id !== account.id && labelOf(a) === mine) ? 'duplicate-label' : 'attested';
+}
+
+/** Fail early (before any confirmation prompt) when `add` or `attest` could not succeed. */
+export function preflightAttest(id, label, { adding }) {
+  const state = load();
+  if (adding) {
+    if (!ID.test(id)) throw new Error(`account id "${id}" must be letters, digits, - or _ (max 31 chars)`);
+    if (state.accounts[id]) throw new Error(`account "${id}" already exists`);
+  } else if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+  if (typeof label === 'string' && label.trim()) assertLabelFree(state, id, { label });
+}
+
+export function attestAccount(id, label, { now = new Date() } = {}) {
+  const state = load();
+  if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+  const identity = { label: displayLabel(String(label)), attestedAt: now.toISOString(), method: 'manual' };
+  assertLabelFree(state, id, identity);
+  state.accounts[id].identity = identity;
+  save(state);
+  return state.accounts[id];
+}
+
+export function addAccount(id, { adapter = 'agy', dir, identity = null } = {}) {
   if (!ID.test(id)) throw new Error(`account id "${id}" must be letters, digits, - or _ (max 31 chars)`);
   const state = load();
   if (state.accounts[id]) throw new Error(`account "${id}" already exists`);
+  if (identity) assertLabelFree(state, id, identity);
   state.accounts[id] = {
     id,
     adapter,
@@ -23,7 +62,8 @@ export function addAccount(id, { adapter = 'agy', dir } = {}) {
     lastUsedAt: 0,
     cooldownUntil: 0,
     holdReason: null,
-    usage: null
+    usage: null,
+    identity
   };
   save(state);
   return state.accounts[id];
