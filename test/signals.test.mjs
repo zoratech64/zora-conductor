@@ -1,3 +1,4 @@
+import { listRuns } from '../src/dispatch.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -77,12 +78,18 @@ test('a worker that leaves a descendant on the profile: leases are KEPT and the 
     assert.equal(r.result.status, 'INTERRUPTED');
     assert.equal(r.result.orphan, true);
     assert.deepEqual(rows.map((l) => l.kind).sort(), ['account', 'project'], 'both leases kept');
+    const record = listRuns(r.dir, 1)[0];
+    assert.ok(record.owner?.pid && record.worker?.pgid, 'the final record keeps who owned the run and which worker, so zc recover can prove it gone');
   } finally {
     for (const pid of scanProfileUsers(r.g1.profileDir).pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
     const reg = openRegistry();
     for (const l of rows) reg.releaseLease(l.key, l.runId);
     reg.close();
   }
+  // Once the stray is gone, a record written by the real finish() can be proven and recovered (dry run).
+  const { recoverRun } = await import('../src/recover.mjs');
+  const out = recoverRun({ root: r.dir, runId: listRuns(r.dir, 1)[0].runId, deps: { isolation: 'dbus' } });
+  assert.equal(out.proof.verdict, 'stale');
 });
 
 test('guard: first signal records it and ends interruptible sleeps, a repeat is ignored, the third forces exit; uninstall restores listeners', () => {
