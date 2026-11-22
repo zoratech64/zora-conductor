@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { test } from 'node:test';
 import { acceptRun, dispatch, rejectRun } from '../src/dispatch.mjs';
-import { acquireLock } from '../src/fsx.mjs';
+import { acquireProjectLease } from '../src/lease-project.mjs';
 import { dirtyState, rollbackPaths, statusEntries } from '../src/gitx.mjs';
 import { parseMinutes } from '../src/limits.mjs';
 import { lockFile } from '../src/paths.mjs';
@@ -109,13 +109,13 @@ test('reject takes the project lock, and always releases it', async () => {
   const { dir, config } = makeRepo();
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': 'w' } });
   const r = await dispatch({ root: dir, task: scoped(), config });
-  const release = acquireLock(lockFile(dir), { runId: 'other' });
+  const release = acquireProjectLease({ root: dir, runId: 'other' });
   assert.throws(() => rejectRun({ root: dir, runId: r.runId }), /already running/);
   assert.ok(existsSync(join(dir, 'src/a.txt')), 'nothing was touched while locked');
   release();
   writeFileSync(join(dir, 'src/a.txt'), 'edited'); // makes reject throw inside the lock
   assert.throws(() => rejectRun({ root: dir, runId: r.runId }), /not exactly/);
-  const again = acquireLock(lockFile(dir), {}); // would throw if the failed reject leaked the lock
+  const again = acquireProjectLease({ root: dir, runId: 'again' }); // would throw if the failed reject leaked the lease
   again();
   rejectRun({ root: dir, runId: r.runId, force: true });
   assert.ok(!existsSync(lockFile(dir)));

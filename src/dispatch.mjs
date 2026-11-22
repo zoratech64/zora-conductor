@@ -3,13 +3,14 @@ import { join } from 'node:path';
 import * as accounts from './accounts.mjs';
 import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
-import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
+import { readJson, writeJsonAtomic } from './fsx.mjs';
+import { acquireProjectLease } from './lease-project.mjs';
 import { processIdentity } from './procid.mjs';
 import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
 import { gitLayout } from './gitmeta.mjs';
 import { runGate, takeMetaBaseline } from './gitmeta-gate.mjs';
 import * as G from './gitx.mjs';
-import { lockFile, runsDir } from './paths.mjs';
+import { projectKey, runsDir } from './paths.mjs';
 import { attemptMetrics } from './metrics.mjs';
 import { buildPrompt, loadEccAssets, loadPrefix, selectEccRules } from './prompt.mjs';
 import { parseMinutes } from './limits.mjs';
@@ -163,8 +164,9 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   }
 
   let release;
+  let workerUnproven = false; // a worker was spawned and its death is not yet proven: never release any lease
   try {
-    release = acquireLock(lockFile(root), { runId: id, registry: true });
+    release = acquireProjectLease({ root, runId: id });
   } catch (error) {
     return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: error.message });
   }
@@ -288,7 +290,6 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     };
 
     const settleHealth = (health) => { settleLease(held, health); held = null; }; // health update and release in one transaction
-    let workerUnproven = false; // a worker was spawned and its death is not yet proven: never release the lease
     let held = null; // the account lease of the attempt in progress; null once released or deliberately kept
     while (result.attempts.length < config.defaults.maxAttempts) {
       let got;
@@ -348,7 +349,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           // false: run no git at all, the worker may still be writing to the repository and its config
           return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
             account: account.id,
-            nextAction: `the worker's processes could not be proven gone (group ${proof.group}, profile scan ${proof.scan}${proof.pids?.length ? `, pids ${proof.pids.join(' ')}` : ''}). The account stays reserved (lease ${lease.key}) and no git command was run. Check for stray agy processes, then release it by hand.`
+            nextAction: `the worker's processes could not be proven gone (group ${proof.group}, profile scan ${proof.scan}${proof.pids?.length ? `, pids ${proof.pids.join(' ')}` : ''}). The account stays reserved (lease ${lease.key}) and so does this project (lease project:${projectKey(root)}); no git command was run. Check for stray agy processes, then release it by hand.`
           }, false);
         }
         workerUnproven = false;
@@ -619,7 +620,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     }, false);
   } finally {
     G.unpinLayout(root);
-    release();
+    if (!workerUnproven) release(); // an unproven worker may still write here: the project stays leased
   }
 }
 
@@ -631,7 +632,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 export function rejectRun({ root, runId, force = false }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to reject (see `zc runs`)');
-  const release = acquireLock(lockFile(root), { runId: `reject-${prev.runId}`, registry: true });
+  const release = acquireProjectLease({ root, runId: `reject-${prev.runId}` });
   let pinned = false;
   try {
     if (prev.gitLayout) {
@@ -679,7 +680,7 @@ export function ackRun({ root, runId }) {
   const prev = runId ? getRun(root, runId) : pendingMetaRun(root);
   if (!prev) throw new Error('no run to acknowledge (see `zc runs`)');
   if (!prev.gitMetaUnrestored) throw new Error(`run ${prev.runId} has nothing to acknowledge (no unrepaired git metadata)`);
-  const release = acquireLock(lockFile(root), { runId: `ack-${prev.runId}`, registry: true });
+  const release = acquireProjectLease({ root, runId: `ack-${prev.runId}` });
   try {
     const file = join(runsDir(root), prev.runId, 'result.json');
     writeJsonAtomic(file, { ...readJson(file, prev), gitMetaAcknowledged: new Date().toISOString() });
@@ -699,7 +700,7 @@ export function ackRun({ root, runId }) {
 export function acceptRun({ root, runId, config = {} }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to accept (see `zc runs`)');
-  const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}`, registry: true });
+  const release = acquireProjectLease({ root, runId: `accept-${prev.runId}` });
   try {
     const pending = pendingMetaRun(root);
     if (pending) {
