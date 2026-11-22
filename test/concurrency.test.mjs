@@ -53,3 +53,14 @@ test('a holder killed with SIGKILL inside a transaction never blocks the registr
   assert.ok(Date.now() - t0 < 4000);
   reg.close();
 });
+
+test('8 processes opening a brand-new registry at the same moment all succeed', { timeout: 120000 }, async () => {
+  for (let round = 0; round < 3; round++) {
+    const base = tmp('zc-fresh-');
+    const dir = join(base, 'registry');
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) =>
+      run([WORKER, dir, join(base, 'held'), '5', '3', String(i)])));
+    assert.deepEqual(results.map((r) => r.done), Array(8).fill(5));
+    assert.deepEqual(results.map((r) => r.duplicates), Array(8).fill(0));
+  }
+});

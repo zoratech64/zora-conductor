@@ -97,6 +97,25 @@ function validate(lease) {
   if (!KINDS.has(lease.kind)) throw new Error(`lease kind must be one of ${[...KINDS].join(', ')}`);
 }
 
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** Many processes may open a fresh registry at once; retry while SQLite reports it busy or locked. */
+function initialize(db) {
+  db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (db.prepare('PRAGMA journal_mode').get().journal_mode !== 'wal') db.exec('PRAGMA journal_mode = WAL');
+      db.exec('PRAGMA synchronous = FULL');
+      const ready = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE name = 'leases'").get();
+      if (!ready) db.exec(SCHEMA);
+      return;
+    } catch (error) {
+      if (attempt >= 100 || !/locked|busy/i.test(String(error.message))) throw error;
+      pause(50);
+    }
+  }
+}
+
 /** Open (and if needed create) the registry. Throws on unsafe location or permissions. */
 export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now() } = {}) {
   const base = registryDir({ dir });
@@ -109,8 +128,7 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
   ensureFile(path);
   const db = new (sqlite().DatabaseSync)(path);
   try {
-    db.exec(`PRAGMA busy_timeout = ${BUSY_MS}; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;`);
-    db.exec(SCHEMA);
+    initialize(db);
   } catch (error) {
     db.close();
     throw error;
