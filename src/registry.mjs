@@ -106,6 +106,18 @@ function validate(lease) {
 
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+/** One transaction, so a concurrent opener sees every table or none. */
+function createSchema(db) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec(SCHEMA);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* nothing open */ }
+    throw error;
+  }
+}
+
 /** Many processes may open a fresh registry at once; retry while SQLite reports it busy or locked. */
 function initialize(db) {
   db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`);
@@ -113,8 +125,9 @@ function initialize(db) {
     try {
       if (db.prepare('PRAGMA journal_mode').get().journal_mode !== 'wal') db.exec('PRAGMA journal_mode = WAL');
       db.exec('PRAGMA synchronous = FULL');
-      const ready = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE name = 'leases'").get();
-      if (!ready) db.exec(SCHEMA);
+      // 'events' is the newest table: a registry made before it existed is completed here.
+      const ready = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE name = 'events'").get();
+      if (!ready) createSchema(db);
       return;
     } catch (error) {
       if (attempt >= 100 || !/locked|busy/i.test(String(error.message))) throw error;
