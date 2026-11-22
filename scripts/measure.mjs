@@ -6,6 +6,7 @@ import { loadConfig } from '../src/config.mjs';
 import { dispatch } from '../src/dispatch.mjs';
 import { head } from '../src/gitx.mjs';
 import { runsDir, stateRoot } from '../src/paths.mjs';
+import { deriveStatus } from '../src/runrecord.mjs';
 import { loadEccAssets, selectEccRules } from '../src/prompt.mjs';
 import { parseTask, REPAIR_CAUSES } from '../src/task.mjs';
 
@@ -158,7 +159,7 @@ function collectRunRecords(dirs) {
           unreadable.push({ path: resultPath, error: 'not a plain object with string runId' });
           continue;
         }
-        runs.push(data);
+        runs.push(deriveStatus(data)); // a crashed run counts as INTERRUPTED/ORPHAN, as `zc runs` shows it
       } catch (readError) {
         unreadable.push({ path: resultPath, error: readError.message });
       }

@@ -42,7 +42,7 @@ function readUid(procRoot, pid) {
   return Number(field);
 }
 
-const validPid = (pid) => Number.isInteger(pid) && pid > 0;
+const validPid = (pid) => Number.isSafeInteger(pid) && pid > 0 && pid <= 2 ** 31 - 1;
 
 function readStat(procRoot, pid) {
   try {
@@ -62,7 +62,7 @@ function pidBarelyAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error.code === 'EPERM';
+    return error.code !== 'ESRCH'; // only "no such process" means gone
   }
 }
 
