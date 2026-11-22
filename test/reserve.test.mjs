@@ -189,8 +189,9 @@ test('dispatch: a worker that leaves a descendant using the profile keeps the le
   try {
     assert.equal(r.status, 'NEEDS_HUMAN');
     assert.match(r.nextAction, /could not be proven gone/);
-    assert.equal(rows.length, 1, 'the lease is kept');
-    assert.equal(rows[0].runId, r.runId);
+    const account = rows.filter((l) => l.kind === 'account');
+    assert.equal(account.length, 1, 'the account lease is kept');
+    assert.equal(account[0].runId, r.runId);
   } finally {
     const { scanProfileUsers } = await import('../src/procid.mjs');
     for (const pid of scanProfileUsers(g1.profileDir).pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }

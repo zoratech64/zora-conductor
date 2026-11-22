@@ -16,7 +16,7 @@ import { profileIdentity } from './registry.mjs';
  * separate decision), it only makes the account unavailable.
  */
 
-const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+export const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const refuse = (reason, extra = {}) => ({ ok: false, reason, ...extra });
 
 function ownerIdentity(lease) {

@@ -51,7 +51,11 @@ function ensureBackups(root) {
 
 function readMaybe(path) {
   let bytes;
-  try { bytes = readFileSync(path); } catch (error) {
+  try {
+    // A FIFO or device in place of a file would block the read; only regular files are read.
+    if (!statSync(path).isFile()) throw new Error(`${path} is not a regular file; refusing to read it`);
+    bytes = readFileSync(path);
+  } catch (error) {
     if (error.code === 'ENOENT') return { exists: false };
     throw error;
   }
@@ -113,24 +117,32 @@ export function withAccountsLock(fn) {
   }
 }
 
-/** Live dispatchers by their lock files. `legacyOnly` skips locks written by registry-aware zc (peers, not legacy writers). */
-export function liveDispatchers(root, alive, { legacyOnly = false } = {}) {
+/**
+ * What a dispatch.lock says. Returns a description of a live dispatcher (or of a file
+ * that cannot be read, which proves nothing) and null when there is none. Never writes.
+ * `legacyOnly` skips locks written by registry-aware zc (peers, not legacy writers).
+ */
+export function inspectLock(lockPath, alive, { legacyOnly = false } = {}) {
+  let lock;
+  try { lock = readMaybe(lockPath); } catch (error) {
+    if (error.code === 'ENOTDIR' || error.code === 'ENOENT') return null; // a stray file, not a project
+    throw error;
+  }
+  if (!lock.exists) return null;
+  if (lock.error || !plain(lock.json)) return `unreadable dispatch.lock ${lockPath}; cannot prove no dispatcher`;
+  if (legacyOnly && lock.json.registry === true) return null;
+  const pid = lock.json.pid;
+  return Number.isInteger(pid) && pid > 0 && pid !== process.pid && alive(pid) ? `pid ${pid}` : null;
+}
+
+/** Live dispatchers by their lock files, over every project of this state root. */
+export function liveDispatchers(root, alive, options = {}) {
   const found = [];
   const projects = join(root, 'projects');
   if (!existsSync(projects)) return found;
   for (const name of readdirSync(projects)) {
-    let lock;
-    try { lock = readMaybe(join(projects, name, 'dispatch.lock')); } catch (error) {
-      if (error.code === 'ENOTDIR' || error.code === 'ENOENT') continue; // a stray file, not a project
-      throw error;
-    }
-    if (lock.exists && (lock.error || !plain(lock.json))) {
-      found.push(`${name} (unreadable dispatch.lock; cannot prove no dispatcher)`);
-      continue;
-    }
-    const pid = lock.json?.pid;
-    if (legacyOnly && lock.json?.registry === true) continue;
-    if (Number.isInteger(pid) && pid !== process.pid && alive(pid)) found.push(`${name} (pid ${pid})`);
+    const why = inspectLock(join(projects, name, 'dispatch.lock'), alive, options);
+    if (why) found.push(`${name} (${why})`);
   }
   return found;
 }
