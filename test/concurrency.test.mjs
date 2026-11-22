@@ -171,3 +171,96 @@ test('test 9: two projects at once get different accounts and independent git in
   assert.deepEqual(world.results.map((r) => r.busy), [0, 0], 'neither had to wait: two accounts, two projects');
   assert.deepEqual(world.repos.map(index), world.before, 'indexes untouched by the other project');
 });
+
+// ---- section 7 tests that live here beyond tests 1, 2, 8 and 9 ----
+
+test('test 3: 8 processes racing for a proven-stale project lease give exactly one winner, 30 rounds', { skip: process.platform !== 'linux' && 'needs /proc', timeout: 300000 }, async () => {
+  const helpers = await import('./helpers.mjs');
+  const { projectKey } = await import('../src/paths.mjs');
+  const LEASE_WORKER = resolve(import.meta.dirname, 'lease-race-worker.mjs');
+  helpers.makeHome();
+  const { dir } = helpers.makeRepo();
+  for (let round = 0; round < 30; round++) {
+    const reg = openRegistry();
+    reg.acquireLease({ key: `project:${projectKey(dir)}`, kind: 'project', runId: `dead-${round}`, projectKey: projectKey(dir), ownerPid: 999999999, ownerStart: 1, ownerBoot: 'old-boot' });
+    reg.close();
+    const children = Array.from({ length: 8 }, (_, i) => {
+      const child = spawn(process.execPath, [LEASE_WORKER, dir, `r${round}-${i}`], { env: process.env, stdio: ['pipe', 'pipe', 'inherit'] });
+      const said = new Promise((done) => { child.stdout.once('data', (d) => done(String(d).trim())); });
+      const exited = new Promise((done) => child.on('exit', done));
+      return { child, said, exited };
+    });
+    const verdicts = await Promise.all(children.map((c) => c.said));
+    for (const c of children) c.child.stdin.end();
+    await Promise.all(children.map((c) => c.exited));
+    assert.equal(verdicts.filter((v) => v === 'won').length, 1, `round ${round}: ${verdicts.join(',')}`);
+  }
+});
+
+test('test 4: a dispatcher killed with SIGKILL keeps its leases while the worker lives, they are reaped after it exits, and zc recover then works', { skip: process.platform === 'win32' && 'POSIX signals', timeout: 120000 }, async () => {
+  const helpers = await import('./helpers.mjs');
+  const { reserve } = await import('../src/reserve.mjs');
+  const { recoverRun } = await import('../src/recover.mjs');
+  const { listRuns } = await import('../src/dispatch.mjs');
+  const { runsDir } = await import('../src/paths.mjs');
+  const { existsSync, readdirSync } = await import('node:fs');
+  const home = helpers.makeHome();
+  const trace = join(home, 'trace.log');
+  const { dir } = helpers.makeRepo();
+  const g1 = helpers.addFake('g1', { mode: 'slow', partial: true, write: { 'src/part.txt': 'half' }, trace });
+  const driver = resolve(import.meta.dirname, 'dispatch-driver.mjs');
+  const child = spawn(process.execPath, [driver, dir], { env: process.env, stdio: 'ignore' });
+  const exited = new Promise((done) => child.on('exit', done));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const waitFor = async (check, what) => { const end = Date.now() + 20000; for (;;) { const v = check(); if (v) return v; if (Date.now() > end) throw new Error(`timeout: ${what}`); await sleep(25); } };
+  const record = () => { const names = existsSync(runsDir(dir)) ? readdirSync(runsDir(dir)) : []; return names.length ? listRuns(dir, 1)[0] : null; };
+  const live = await waitFor(() => { const r = record(); return r?.worker?.pgid && existsSync(trace) && /^ready /m.test(readFileSync(trace, 'utf8')) ? r : null; }, 'the worker to be ready');
+  child.kill('SIGKILL');
+  await exited;
+  const deps = { platform: 'linux', isolation: 'dbus' };
+  const kept = reserve({ root: dir, runId: 'next', deps });
+  assert.equal(kept.ok, false, 'the worker is alive: the account is not given away');
+  assert.equal(openRegistry().listLeases().length, 2, 'account and project lease still held');
+  process.kill(-live.worker.pgid, 'SIGKILL');
+  await waitFor(() => record().status === 'INTERRUPTED', 'INTERRUPTED once the worker is gone');
+  const proof = recoverRun({ root: dir, runId: live.runId, deps });
+  assert.equal(proof.proof.verdict, 'stale');
+  const done = recoverRun({ root: dir, runId: live.runId, yes: true, deps });
+  assert.equal(done.recovered, true);
+  assert.equal(existsSync(join(dir, 'src', 'part.txt')), true, 'the tree was preserved');
+  assert.deepEqual(openRegistry().listLeases(), []);
+  void g1;
+});
+
+test('test 5: a worker that crashes mid-write is handed on with its partial work and the final gates pass', async () => {
+  const helpers = await import('./helpers.mjs');
+  const { dispatch } = await import('../src/dispatch.mjs');
+  helpers.makeHome();
+  const { dir, config } = helpers.makeRepo({ defaults: { onLimit: 'handoff' } });
+  helpers.addFake('g1', { mode: 'crash', partial: true, write: { 'src/a.txt': 'A' } });
+  helpers.addFake('g2', { mode: 'ok', write: { 'src/b.txt': 'B' } });
+  const r = await dispatch({ root: dir, task: helpers.task('id: T-5\nallowed:\n  - src/'), config });
+  assert.equal(r.status, 'OK', r.nextAction);
+  assert.deepEqual(r.attempts.map((a) => a.account), ['g1', 'g1', 'g2'], 'one rerun on the crashed account, then the next');
+  assert.deepEqual(r.changed.sort(), ['src/a.txt', 'src/b.txt']);
+  assert.ok(r.attempts.some((a) => a.handoff === 1));
+});
+
+test('B4: two ZC_HOME roots that point at the same profile directory still cannot both lease it', async () => {
+  const helpers = await import('./helpers.mjs');
+  const accounts = await import('../src/accounts.mjs');
+  const { reserve } = await import('../src/reserve.mjs');
+  const { mkdtempSync: mk } = await import('node:fs');
+  helpers.makeHome();
+  const a = helpers.addFake('g1', { mode: 'ok' });
+  const { dir: rootA } = helpers.makeRepo();
+  const first = reserve({ root: rootA, runId: 'a' });
+  assert.equal(first.ok, true);
+  process.env.ZC_HOME = mk(join(tmpdir(), 'zc-home-'));
+  accounts.addAccount('gx', { dir: a.profileDir, identity: { label: 'label-gx', attestedAt: new Date().toISOString(), method: 'manual' } });
+  accounts.updateAccount('gx', { status: 'ready' });
+  const { dir: rootB } = helpers.makeRepo();
+  const second = reserve({ root: rootB, runId: 'b' });
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, 'all-reserved');
+});
