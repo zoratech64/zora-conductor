@@ -6,6 +6,7 @@ import { liveDispatchers, withAccountsLock } from './migrate.mjs';
 import { pidAlive } from './fsx.mjs';
 import { projectKey, stateRoot } from './paths.mjs';
 import { groupAlive, isAlive, processIdentity, scanProfileUsers } from './procid.mjs';
+import { reconcile } from './reconcile.mjs';
 import { profileIdentity } from './registry.mjs';
 
 /**
@@ -48,7 +49,7 @@ function overlappingLease(registry, id) {
   return registry.listLeases().find((l) => l.key !== id.key && l.profilePath && nested(l.profilePath, id.path));
 }
 
-function takeFirstFree(registry, attested, base) {
+function takeFirstFree(registry, attested, base, kept = new Map()) {
   let stale = null;
   let inUse = null;
   for (const account of attested) {
@@ -57,14 +58,14 @@ function takeFirstFree(registry, attested, base) {
     const id = profileIdentity(account.profileDir);
     const clash = overlappingLease(registry, id);
     if (clash) {
-      if (!ownerAlive(clash)) stale = { account: account.id, holder: clash };
+      if (!ownerAlive(clash)) stale = { account: account.id, holder: clash, why: kept.get(clash.key)?.reason };
       continue;
     }
     const taken = registry.acquireLease({
       ...base, key: id.key, kind: 'account', profilePath: id.path, profileDev: id.dev, profileIno: id.ino
     });
     if (!taken.acquired) {
-      if (!ownerAlive(taken.holder)) stale = { account: account.id, holder: taken.holder };
+      if (!ownerAlive(taken.holder)) stale = { account: account.id, holder: taken.holder, why: kept.get(taken.holder.key)?.reason };
       continue;
     }
     // Something that holds no lease may already be using this profile (an older zc worker, a manual agy).
@@ -82,7 +83,7 @@ function takeFirstFree(registry, attested, base) {
 }
 
 /** Choose an attested, ready account and lease its profile in one transaction. */
-export function reserve({ root, runId, maxProjects = 2, exclude = [], now = Date.now() }) {
+export function reserve({ root, runId, maxProjects = 2, exclude = [], now = Date.now(), deps = {} }) {
   return withAccountsLock((registry) => {
     const legacy = liveDispatchers(stateRoot(), pidAlive, { legacyOnly: true });
     if (legacy.length) return refuse('legacy-dispatcher', { dispatchers: legacy });
@@ -97,6 +98,7 @@ export function reserve({ root, runId, maxProjects = 2, exclude = [], now = Date
     if (!attested.length) {
       return refuse('account-unattested', { ids: ready.filter((a) => accounts.attestationStatus(a, all) !== 'attested').map((a) => a.id) });
     }
+    const { kept } = reconcile(registry, { deps }); // proven-stale leases of dead dispatchers go; the rest stay and explain themselves
     const mine = projectKey(root);
     const others = liveProjects(registry, mine);
     if (others.size >= maxProjects) return refuse('max-projects', { projects: [...others] });
@@ -104,7 +106,7 @@ export function reserve({ root, runId, maxProjects = 2, exclude = [], now = Date
     return takeFirstFree(registry, attested, {
       runId, projectKey: mine, stateRoot: stateRoot(), zcVersion: VERSION,
       ownerPid: process.pid, ownerStart: self?.startTicks ?? null, ownerBoot: self?.bootId ?? null
-    });
+    }, kept);
   });
 }
 

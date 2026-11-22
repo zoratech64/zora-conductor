@@ -308,6 +308,10 @@ test('reserve: a process that uses a profile without holding a lease blocks it (
     assert.deepEqual([r.ok, r.reason], [false, 'profile-in-use']);
     assert.ok(r.pids.includes(stray.pid));
     assert.equal(leases().length, 0, 'the tentative lease was given back');
-  } finally { process.kill(-stray.pid, 'SIGKILL'); }
+  } finally {
+    const exited = new Promise((resolve) => stray.once('exit', resolve));
+    process.kill(-stray.pid, 'SIGKILL');
+    await exited; // the process must really be gone before the scan runs again
+  }
   assert.equal(reserve({ root: mkTmp('p-'), runId: 'r2' }).ok, true, 'free again once the stray is gone');
 });
