@@ -1,14 +1,25 @@
-import { readJson, writeJsonAtomic } from './fsx.mjs';
 import { displayLabel, normalizeLabel } from './attest.mjs';
-import { accountsFile, profileDirFor } from './paths.mjs';
+import { readAccountsState, withAccountsLock, writeAccountsState } from './migrate.mjs';
+import { profileDirFor } from './paths.mjs';
 
 const ID = /^[a-z0-9][a-z0-9_-]{0,30}$/i;
 
-const load = () => readJson(accountsFile(), { currentId: null, accounts: {} });
-const save = (state) => writeJsonAtomic(accountsFile(), state, { mode: 0o600 });
+const load = () => readAccountsState().data;
+
+/** Read-modify-write under one machine-wide registry transaction; saves only when something changed. */
+function mutate(fn) {
+  return withAccountsLock(() => {
+    const { kind, data } = readAccountsState();
+    const before = JSON.stringify(data);
+    const result = fn(data);
+    if (JSON.stringify(data) !== before) writeAccountsState(kind, data);
+    return result;
+  });
+}
 
 export const listAccounts = () => Object.values(load().accounts).sort((a, b) => a.id.localeCompare(b.id));
-export const getAccount = (id) => load().accounts[id] ?? null;
+const own = (accounts, id) => Object.hasOwn(accounts, id);
+export const getAccount = (id) => { const { accounts } = load(); return own(accounts, id) ? accounts[id] : null; };
 export const currentId = () => load().currentId;
 
 const labelOf = (account) => {
@@ -33,57 +44,51 @@ export function preflightAttest(id, label, { adding }) {
   const state = load();
   if (adding) {
     if (!ID.test(id)) throw new Error(`account id "${id}" must be letters, digits, - or _ (max 31 chars)`);
-    if (state.accounts[id]) throw new Error(`account "${id}" already exists`);
-  } else if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+    if (own(state.accounts, id)) throw new Error(`account "${id}" already exists`);
+  } else if (!own(state.accounts, id)) throw new Error(`unknown account "${id}"`);
   if (typeof label === 'string' && label.trim()) assertLabelFree(state, id, { label });
 }
 
-export function attestAccount(id, label, { now = new Date() } = {}) {
-  const state = load();
-  if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+export const attestAccount = (id, label, { now = new Date() } = {}) => mutate((state) => {
+  if (!own(state.accounts, id)) throw new Error(`unknown account "${id}"`);
   const identity = { label: displayLabel(String(label)), attestedAt: now.toISOString(), method: 'manual' };
   assertLabelFree(state, id, identity);
   state.accounts[id].identity = identity;
-  save(state);
   return state.accounts[id];
-}
+});
 
 export function addAccount(id, { adapter = 'agy', dir, identity = null } = {}) {
   if (!ID.test(id)) throw new Error(`account id "${id}" must be letters, digits, - or _ (max 31 chars)`);
-  const state = load();
-  if (state.accounts[id]) throw new Error(`account "${id}" already exists`);
-  if (identity) assertLabelFree(state, id, identity);
-  state.accounts[id] = {
-    id,
-    adapter,
-    profileDir: dir ?? profileDirFor(id),
-    status: 'needs-login',
-    createdAt: new Date().toISOString(),
-    lastUsedAt: 0,
-    cooldownUntil: 0,
-    holdReason: null,
-    usage: null,
-    identity
-  };
-  save(state);
-  return state.accounts[id];
+  return mutate((state) => {
+    if (own(state.accounts, id)) throw new Error(`account "${id}" already exists`);
+    if (identity) assertLabelFree(state, id, identity);
+    state.accounts[id] = {
+      id,
+      adapter,
+      profileDir: dir ?? profileDirFor(id),
+      status: 'needs-login',
+      createdAt: new Date().toISOString(),
+      lastUsedAt: 0,
+      cooldownUntil: 0,
+      holdReason: null,
+      usage: null,
+      identity
+    };
+    return state.accounts[id];
+  });
 }
 
-export function updateAccount(id, patch) {
-  const state = load();
-  if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+export const updateAccount = (id, patch) => mutate((state) => {
+  if (!own(state.accounts, id)) throw new Error(`unknown account "${id}"`);
   Object.assign(state.accounts[id], patch);
-  save(state);
   return state.accounts[id];
-}
+});
 
-export function removeAccount(id) {
-  const state = load();
-  if (!state.accounts[id]) throw new Error(`unknown account "${id}"`);
+export const removeAccount = (id) => mutate((state) => {
+  if (!own(state.accounts, id)) throw new Error(`unknown account "${id}"`);
   delete state.accounts[id];
   if (state.currentId === id) state.currentId = null;
-  save(state);
-}
+});
 
 export const isEligible = (account, now = Date.now()) =>
   account.status === 'ready' && (account.cooldownUntil || 0) <= now;
@@ -101,21 +106,17 @@ export function pickNext({ now = Date.now(), exclude = [] } = {}) {
   return eligible.sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0) || a.id.localeCompare(b.id))[0];
 }
 
-export function markUsed(id) {
-  const state = load();
-  if (!state.accounts[id]) return;
+export const markUsed = (id) => mutate((state) => {
+  if (!own(state.accounts, id)) return;
   state.currentId = id;
   state.accounts[id].lastUsedAt = Date.now();
-  save(state);
-}
+});
 
-function hold(id, patch) {
-  const state = load();
-  if (!state.accounts[id]) return;
+const hold = (id, patch) => mutate((state) => {
+  if (!own(state.accounts, id)) return;
   Object.assign(state.accounts[id], patch);
   if (state.currentId === id) state.currentId = null;
-  save(state);
-}
+});
 
 export const cooldown = (id, untilMs, reason) => hold(id, { cooldownUntil: untilMs, holdReason: reason });
 export const setStatus = (id, status, reason = null) => hold(id, { status, holdReason: reason });

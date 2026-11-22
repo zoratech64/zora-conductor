@@ -37,10 +37,24 @@ export function makeRepo(configExtra = {}) {
   return { dir, config: loadConfig(dir) };
 }
 
-/** Isolated machine-global state, with the fake agy wired in. */
-export function makeHome({ isolation = 'none' } = {}) {
+/**
+ * Point every machine-global location (state root and lease registry) at temp dirs.
+ * Importing this module already does it once, so a test that forgets makeHome()
+ * can never write to the real ~/.local/state.
+ */
+export function isolateState() {
   const home = mkdtempSync(join(tmpdir(), 'zc-home-'));
   process.env.ZC_HOME = home;
+  process.env.ZC_TESTING = '1';
+  process.env.ZC_TEST_REGISTRY_DIR = join(mkdtempSync(join(tmpdir(), 'zc-registry-')), 'registry');
+  return home;
+}
+
+isolateState();
+
+/** Isolated machine-global state, with the fake agy wired in. */
+export function makeHome({ isolation = 'none' } = {}) {
+  const home = isolateState();
   process.env.ZC_AGY = FAKE_AGY;
   process.env.ZC_ISOLATION = isolation;
   return home;
