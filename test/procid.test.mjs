@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -302,7 +302,7 @@ test('scanProfileUsers (fake /proc): XDG_RUNTIME_DIR, trailing slash and non-ASC
 
 test('scanProfileUsers (fake /proc): symlinked profile dir resolves to its real path; deleted suffix still matches', posixOnly, () => {
   const root = tmp('zc-proc-');
-  const real = tmp('zc-real-');
+  const real = realpathSync(tmp('zc-real-'));
   const link = join(tmp('zc-link-'), 'g1');
   symlinkSync(real, link);
   fakeProc(root, 1201, { cwd: real });
