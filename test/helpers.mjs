@@ -60,8 +60,9 @@ export function makeHome({ isolation = 'none' } = {}) {
   return home;
 }
 
-export function addFake(id, scenario) {
-  const account = accounts.addAccount(id);
+export function addFake(id, scenario, { attested = true } = {}) {
+  const identity = attested ? { label: `label-${id}`, attestedAt: new Date().toISOString(), method: 'manual' } : null;
+  const account = accounts.addAccount(id, { identity });
   mkdirSync(account.profileDir, { recursive: true });
   setScenario(account, scenario);
   return accounts.updateAccount(id, { status: 'ready' });

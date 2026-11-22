@@ -4,6 +4,8 @@ import * as accounts from './accounts.mjs';
 import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
 import { acquireLock, readJson, writeJsonAtomic } from './fsx.mjs';
+import { processIdentity } from './procid.mjs';
+import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
 import { gitLayout } from './gitmeta.mjs';
 import { runGate, takeMetaBaseline } from './gitmeta-gate.mjs';
 import * as G from './gitx.mjs';
@@ -88,6 +90,34 @@ function taskPrompt({ root, task, config, resumeNote }) {
   };
 }
 
+/** Map a refused reservation to the finish() arguments of the dispatch that asked. */
+function reserveOutcome(got) {
+  const named = (ids) => ids.join(', ');
+  switch (got.reason) {
+    case 'cooling':
+      return ['NO_CAPACITY', EXIT.NO_CAPACITY, {
+        retryAfter: new Date(got.retryAfter).toISOString(),
+        nextAction: `every account is cooling down; the earliest is back at ${new Date(got.retryAfter).toISOString()}. Wait, or add an account with \`zc account add\`.`
+      }];
+    case 'all-reserved':
+      return ['NO_CAPACITY', EXIT.NO_CAPACITY, { reason: 'all-reserved', nextAction: 'every ready account is in use by another dispatch. Wait for one to finish, or add an account with `zc account add`.' }];
+    case 'max-projects':
+      return ['NO_CAPACITY', EXIT.NO_CAPACITY, { reason: 'max-projects', nextAction: `${got.projects.length} other projects are already dispatching (the limit is defaults.maxLiveProjects). Wait for one to finish.` }];
+    case 'account-unattested':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'account-unattested', nextAction: `these accounts have no valid, unique attestation: ${named(got.ids)}. Confirm each is a different Google account used in no other profile with \`zc account attest ${got.ids[0]} --label <name>\`.` }];
+    case 'legacy-dispatcher':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'legacy-dispatcher', nextAction: `an older zc is dispatching right now (${named(got.dispatchers)}); it does not take account leases. Wait for it to finish; do not run older zc copies.` }];
+    case 'profile-in-use':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'profile-in-use', nextAction: `account ${got.account} has no lease but processes already use its profile (pids ${got.pids.join(' ')}), for example an older zc worker or a manual agy. Stop them, then dispatch again.` }];
+    case 'stale-lease':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'stale-lease', nextAction: `account ${got.account} is still leased by run ${got.holder.runId} whose dispatcher (pid ${got.holder.ownerPid}) is gone. It was not taken over; check for stray agy processes and release it by hand.` }];
+    case 'no-accounts':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: 'no worker accounts yet. Run `zc account add <id>` for each Gemini account.' }];
+    default:
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: 'no account is ready (needs-login or blocked). See `zc status`; fix with `zc account login <id>`.' }];
+  }
+}
+
 /**
  * Run one task on one worker at a time, in place, switching accounts when one
  * hits a limit. The tree must be clean on entry (or match a prior run when
@@ -134,7 +164,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
   let release;
   try {
-    release = acquireLock(lockFile(root), { runId: id });
+    release = acquireLock(lockFile(root), { runId: id, registry: true });
   } catch (error) {
     return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: error.message });
   }
@@ -257,305 +287,326 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       };
     };
 
+    const settleHealth = (health) => { settleLease(held, health); held = null; }; // health update and release in one transaction
+    let workerUnproven = false; // a worker was spawned and its death is not yet proven: never release the lease
+    let held = null; // the account lease of the attempt in progress; null once released or deliberately kept
     while (result.attempts.length < config.defaults.maxAttempts) {
-      const account = accounts.pickNext();
-      if (!account) {
-        const at = accounts.nextAvailableAt();
-        if (at) {
-          return finish('NO_CAPACITY', EXIT.NO_CAPACITY, {
-            retryAfter: new Date(at).toISOString(),
-            nextAction: `every account is cooling down; the earliest is back at ${new Date(at).toISOString()}. Wait, or add an account with \`zc account add\`.`
-          });
-        }
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          nextAction: accounts.listAccounts().length
-            ? 'no account is ready (needs-login or blocked). See `zc status`; fix with `zc account login <id>`.'
-            : 'no worker accounts yet. Run `zc account add <id>` for each Gemini account.'
-        });
-      }
-
-      const n = result.attempts.length + 1;
-      const attempt = { n, account: account.id, startedAt: new Date().toISOString() };
-      result.attempts.push(attempt);
-      accounts.markUsed(account.id);
-      log(`attempt ${n} on ${account.id}`);
-
-      const { prompt } = taskPrompt({ root, task, config, resumeNote });
-      writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
-      let zcSnap;
+      let got;
       try {
-        zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
+        got = reserve({ root, runId: id, maxProjects: config.defaults.maxLiveProjects });
       } catch (error) {
-        attempt.outcome = 'not-started';
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          nextAction: `no worker was started: .zc/ could not be fully read to protect it (${error.code ?? 'error'}: ${error.message}). Fix its permissions and dispatch again.`
-        });
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: `no account could be reserved safely: ${error.message}` });
       }
-      if (zcSnap.uncopied.length) {
-        attempt.outcome = 'not-started';
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          nextAction: `no worker was started: these .zc/ files are too large (or not regular files) to protect with a restorable copy: ${zcSnap.uncopied.slice(0, 5).join(', ')}. Move them out of .zc/ and dispatch again.`
-        });
-      }
-      const started = Date.now();
-      const r = await runAgy({
-        account, prompt, cwd: root, timeoutSec,
-        permissions: config.worker.permissions,
-        model: task.meta.model || config.worker.model,
-        effort: config.worker.effort
-      });
-      attempt.durationMs = Date.now() - started;
-      attempt.metrics = attemptMetrics(r.parsed, prompt);
-      writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
+      if (!got.ok) return finish(...reserveOutcome(got));
+      const { account } = got;
+      held = got.lease;
 
-      // Git metadata first: nothing below may run a git command against hooks or config the worker changed.
-      const metaEntries = metaGate('worker', n);
-      if (metaEntries.length) attempt.gitMeta = metaEntries;
-      if (metaEntries.some((e) => !e.restored)) {
-        attempt.outcome = 'git-meta-not-restored';
-        return metaStop(metaEntries, 'worker', { account: account.id });
-      }
-      const metaPaths = metaEntries.map((e) => e.path);
-
-      // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
-      let zcViolations;
       try {
-        zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
-      } catch (error) {
-        attempt.outcome = 'zc-not-checked';
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          account: account.id,
-          nextAction: `after the worker ran, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
-        });
-      }
-      if (zcViolations.length) attempt.zcViolations = zcViolations;
-      const unrestored = zcViolations.filter((v) => !v.restored);
-      if (unrestored.length) {
-        attempt.outcome = 'zc-not-restored';
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          account: account.id,
-          forbidden: unrestored.map((v) => v.path),
-          nextAction: `the worker changed .zc/ files that could not be restored: ${unrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
-        });
-      }
-      const workerState = G.dirtyState(root);
+        const n = result.attempts.length + 1;
+        const attempt = { n, account: account.id, startedAt: new Date().toISOString() };
+        result.attempts.push(attempt);
+        log(`attempt ${n} on ${account.id}`);
 
-      if (G.head(root) !== head0 || G.branch(root) !== branch0) {
-        attempt.outcome = 'moved-head';
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          account: account.id,
-          nextAction: 'the worker moved HEAD or switched branches. Nothing was rolled back automatically; inspect with `git reflog`.'
-        });
-      }
-
-      const p = r.parsed;
-      // The edits are the deliverable, so an empty written report is not a failure: git decides (NO_CHANGES below).
-      const succeeded = !r.timedOut && !r.error && r.code === 0 && p.status === 'SUCCESS' && !p.error;
-
-      if (succeeded) {
-        attempt.outcome = 'ok';
-        const entries = G.statusEntries(root);
-        let changed = G.changedPaths(entries);
-        Object.assign(result, { account: account.id, changed, workerSummary: p.response.slice(0, 2000) || '(the worker wrote no report)' });
-        if (!changed.length && p.permissionAsks.length) {
-          result.denied = p.denied;
-          if (!deniedRetried) { // the model tried a command once; say plainly that commands are off and try again
-            deniedRetried = true;
-            Object.assign(attempt, { outcome: 'failed', kind: 'permission', error: p.denied[0] ?? 'denied action' });
-            resumeNote = NO_COMMANDS_NOTE;
-            continue;
-          }
-          return finish('DENIED', EXIT.FAILED, {
-            nextAction: `the worker tried an action it is not allowed (${p.denied.join('; ') || 'a command'}) and stopped with nothing done. Make the task need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.`
-          });
-        }
-        if (!changed.length && !zcViolations.length && !metaPaths.length) {
-          return finish('NO_CHANGES', EXIT.FAILED, {
-            nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
-          });
-        }
-        let inherited = [];
-        let scope;
-        if (repairOf && inheritable) {
-          inherited = changed.filter((p) => prevChanged.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
-          const inheritedSet = new Set(inherited);
-          const own = changed.filter((p) => !inheritedSet.has(p));
-          const ownScope = partitionByScope(own, allowed, config.forbidden);
-          const inheritedScope = partitionByScope(inherited, ['**'], config.forbidden);
-          scope = {
-            outOfScope: ownScope.outOfScope,
-            forbidden: [...ownScope.forbidden, ...inheritedScope.forbidden]
-          };
-        } else {
-          scope = partitionByScope(changed, allowed, config.forbidden);
-        }
-        result.inherited = inherited;
-        const zcPaths = zcViolations.map((v) => v.path);
-        if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length || metaPaths.length) {
-          G.savePartial(root, join(runDir, 'rejected'), entries);
-          let rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
-          const revealed = rolledBack ? revealedAfterRollback(entries) : [];
-          if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
-          return finish('SCOPE_VIOLATION', EXIT.FAILED, {
-            phase: 'worker',
-            outOfScope: scope.outOfScope,
-            forbidden: [...scope.forbidden, ...zcPaths, ...metaPaths],
-            gitMeta: metaEntries,
-            rolledBack,
-            nextAction: rolledBack
-              ? 'the worker edited files outside its allowed paths; its work was saved to the run folder and rolled back. Tighten the task or widen `allowed` deliberately.'
-              : 'the worker edited files outside its allowed paths and the tree was left as-is. Review with `git status`, then `zc reject`.'
-          });
-        }
-        result.preVerifyState = workerState;
-        if (repairOf) {
-          const carried = changed.filter((p) => prevVerify.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
-          if (carried.length) {
-            result.carriedVerify = carried;
-            const carriedSet = new Set(carried);
-            changed = changed.filter((p) => !carriedSet.has(p));
-            result.changed = changed;
-            result.inherited = result.inherited.filter((p) => !carriedSet.has(p));
-          }
-        }
-        const vStarted = Date.now();
-        result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
-        result.verifyDurationMs = Date.now() - vStarted;
-
-        const vMetaEntries = metaGate('verify', n);
-        if (vMetaEntries.length) attempt.gitMetaVerify = vMetaEntries;
-        if (vMetaEntries.some((e) => !e.restored)) {
-          attempt.outcome = 'git-meta-not-restored';
-          return metaStop(vMetaEntries, 'verify', { account: account.id });
-        }
-        const vMetaPaths = vMetaEntries.map((e) => e.path);
-
-        let verifyZc;
+        const { prompt } = taskPrompt({ root, task, config, resumeNote });
+        writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
+        let zcSnap;
         try {
-          verifyZc = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-verify-${n}`) });
+          zcSnap = snapshotZc(root, join(runDir, `zc-snapshot-${n}`));
+        } catch (error) {
+          attempt.outcome = 'not-started';
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            nextAction: `no worker was started: .zc/ could not be fully read to protect it (${error.code ?? 'error'}: ${error.message}). Fix its permissions and dispatch again.`
+          });
+        }
+        if (zcSnap.uncopied.length) {
+          attempt.outcome = 'not-started';
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            nextAction: `no worker was started: these .zc/ files are too large (or not regular files) to protect with a restorable copy: ${zcSnap.uncopied.slice(0, 5).join(', ')}. Move them out of .zc/ and dispatch again.`
+          });
+        }
+        const started = Date.now();
+        let spawned = null;
+        const r = await runAgy({
+          account, prompt, cwd: root, timeoutSec,
+          permissions: config.worker.permissions,
+          model: task.meta.model || config.worker.model,
+          effort: config.worker.effort,
+          onSpawn: (child) => {
+            workerUnproven = true;
+            spawned = { pgid: child.pid, worker: null };
+            try { spawned.worker = processIdentity(child.pid); } catch { /* unreadable: the scan then runs without an age bound */ }
+            recordWorker(held, child);
+          }
+        });
+        attempt.durationMs = Date.now() - started;
+        // The lease is released only when the worker is proven gone; otherwise the account stays reserved for a human.
+        const proof = proveWorkerGone({ profileDir: account.profileDir, pgid: spawned?.pgid, worker: spawned?.worker });
+        if (!proof.gone) {
+          attempt.outcome = 'worker-unproven';
+          const lease = held;
+          held = null; // keep the lease
+          // false: run no git at all, the worker may still be writing to the repository and its config
+          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+            account: account.id,
+            nextAction: `the worker's processes could not be proven gone (group ${proof.group}, profile scan ${proof.scan}${proof.pids?.length ? `, pids ${proof.pids.join(' ')}` : ''}). The account stays reserved (lease ${lease.key}) and no git command was run. Check for stray agy processes, then release it by hand.`
+          }, false);
+        }
+        workerUnproven = false;
+        attempt.metrics = attemptMetrics(r.parsed, prompt);
+        writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
+
+        // Git metadata first: nothing below may run a git command against hooks or config the worker changed.
+        const metaEntries = metaGate('worker', n);
+        if (metaEntries.length) attempt.gitMeta = metaEntries;
+        if (metaEntries.some((e) => !e.restored)) {
+          attempt.outcome = 'git-meta-not-restored';
+          return metaStop(metaEntries, 'worker', { account: account.id });
+        }
+        const metaPaths = metaEntries.map((e) => e.path);
+
+        // .zc/ belongs to the manager: undo any change a worker made there, keeping its version as evidence.
+        let zcViolations;
+        try {
+          zcViolations = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-${n}`) });
         } catch (error) {
           attempt.outcome = 'zc-not-checked';
           return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
             account: account.id,
-            phase: 'verify',
-            nextAction: `after verify, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
+            nextAction: `after the worker ran, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
           });
         }
-        if (verifyZc.length) attempt.zcViolationsVerify = verifyZc;
-        const verifyUnrestored = verifyZc.filter((v) => !v.restored);
-        if (verifyUnrestored.length) {
+        if (zcViolations.length) attempt.zcViolations = zcViolations;
+        const unrestored = zcViolations.filter((v) => !v.restored);
+        if (unrestored.length) {
           attempt.outcome = 'zc-not-restored';
           return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
             account: account.id,
-            phase: 'verify',
-            forbidden: verifyUnrestored.map((v) => v.path),
-            nextAction: `a verify command changed .zc/ files that could not be restored: ${verifyUnrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-verify-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
+            forbidden: unrestored.map((v) => v.path),
+            nextAction: `the worker changed .zc/ files that could not be restored: ${unrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
           });
         }
+        const workerState = G.dirtyState(root);
 
         if (G.head(root) !== head0 || G.branch(root) !== branch0) {
           attempt.outcome = 'moved-head';
           return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
             account: account.id,
-            phase: 'verify',
-            nextAction: 'a verify command moved HEAD or switched branches. Nothing was rolled back automatically; inspect with `git reflog`.'
+            nextAction: 'the worker moved HEAD or switched branches. Nothing was rolled back automatically; inspect with `git reflog`.'
           });
         }
 
-        const postEntries = G.statusEntries(root);
-        const postState = G.dirtyState(root);
-        const allKeys = new Set([...Object.keys(workerState), ...Object.keys(postState)]);
-        const verifyChanged = [...allKeys].filter((p) => workerState[p] !== postState[p]).sort();
-        const vScope = partitionByScope(verifyChanged, allowed, config.forbidden);
-        const vZcPaths = verifyZc.map((v) => v.path);
+        const p = r.parsed;
+        // The edits are the deliverable, so an empty written report is not a failure: git decides (NO_CHANGES below).
+        const succeeded = !r.timedOut && !r.error && r.code === 0 && p.status === 'SUCCESS' && !p.error;
 
-        if (vScope.forbidden.length || vScope.outOfScope.length || vZcPaths.length || vMetaPaths.length) {
-          G.savePartial(root, join(runDir, 'rejected-verify'), postEntries);
-          let rolledBack = resetAllowed && G.rollbackPaths(root, postEntries, G.dirtyState(root)).conflicts.length === 0;
-          const revealed = rolledBack ? revealedAfterRollback(postEntries) : [];
-          if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
-          return finish('SCOPE_VIOLATION', EXIT.FAILED, {
-            phase: 'verify',
-            verifyChanged,
-            outOfScope: vScope.outOfScope,
-            forbidden: [...vScope.forbidden, ...vZcPaths, ...vMetaPaths],
-            gitMeta: vMetaEntries,
-            rolledBack,
-            nextAction: rolledBack
-              ? 'a verify command changed files outside the allowed paths (or .zc/); the whole result was saved to the run folder and rolled back. If your build or tests legitimately write these files, add them to `allowed` or .gitignore.'
-              : 'a verify command changed files outside the allowed paths (or .zc/); the tree was left as-is. Review with `git status`, then `zc reject`.'
-          });
-        }
+        if (succeeded) {
+          attempt.outcome = 'ok';
+          const entries = G.statusEntries(root);
+          let changed = G.changedPaths(entries);
+          Object.assign(result, { account: account.id, changed, workerSummary: p.response.slice(0, 2000) || '(the worker wrote no report)' });
+          if (!changed.length && p.permissionAsks.length) {
+            result.denied = p.denied;
+            if (!deniedRetried) { // the model tried a command once; say plainly that commands are off and try again
+              deniedRetried = true;
+              Object.assign(attempt, { outcome: 'failed', kind: 'permission', error: p.denied[0] ?? 'denied action' });
+              resumeNote = NO_COMMANDS_NOTE;
+              continue;
+            }
+            return finish('DENIED', EXIT.FAILED, {
+              nextAction: `the worker tried an action it is not allowed (${p.denied.join('; ') || 'a command'}) and stopped with nothing done. Make the task need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.`
+            });
+          }
+          if (!changed.length && !zcViolations.length && !metaPaths.length) {
+            return finish('NO_CHANGES', EXIT.FAILED, {
+              nextAction: 'the worker reported success but changed nothing. Read workerSummary, then sharpen the task or give up on it.'
+            });
+          }
+          let inherited = [];
+          let scope;
+          if (repairOf && inheritable) {
+            inherited = changed.filter((p) => prevChanged.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
+            const inheritedSet = new Set(inherited);
+            const own = changed.filter((p) => !inheritedSet.has(p));
+            const ownScope = partitionByScope(own, allowed, config.forbidden);
+            const inheritedScope = partitionByScope(inherited, ['**'], config.forbidden);
+            scope = {
+              outOfScope: ownScope.outOfScope,
+              forbidden: [...ownScope.forbidden, ...inheritedScope.forbidden]
+            };
+          } else {
+            scope = partitionByScope(changed, allowed, config.forbidden);
+          }
+          result.inherited = inherited;
+          const zcPaths = zcViolations.map((v) => v.path);
+          if (scope.forbidden.length || scope.outOfScope.length || zcPaths.length || metaPaths.length) {
+            G.savePartial(root, join(runDir, 'rejected'), entries);
+            let rolledBack = resetAllowed && G.rollbackPaths(root, entries, workerState).conflicts.length === 0;
+            const revealed = rolledBack ? revealedAfterRollback(entries) : [];
+            if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
+            return finish('SCOPE_VIOLATION', EXIT.FAILED, {
+              phase: 'worker',
+              outOfScope: scope.outOfScope,
+              forbidden: [...scope.forbidden, ...zcPaths, ...metaPaths],
+              gitMeta: metaEntries,
+              rolledBack,
+              nextAction: rolledBack
+                ? 'the worker edited files outside its allowed paths; its work was saved to the run folder and rolled back. Tighten the task or widen `allowed` deliberately.'
+                : 'the worker edited files outside its allowed paths and the tree was left as-is. Review with `git status`, then `zc reject`.'
+            });
+          }
+          result.preVerifyState = workerState;
+          if (repairOf) {
+            const carried = changed.filter((p) => prevVerify.has(p) && Object.hasOwn(baseline, p) && workerState[p] === baseline[p]).sort();
+            if (carried.length) {
+              result.carriedVerify = carried;
+              const carriedSet = new Set(carried);
+              changed = changed.filter((p) => !carriedSet.has(p));
+              result.changed = changed;
+              result.inherited = result.inherited.filter((p) => !carriedSet.has(p));
+            }
+          }
+          const vStarted = Date.now();
+          result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
+          result.verifyDurationMs = Date.now() - vStarted;
 
-        if (verifyChanged.length) {
-          result.verifyChanged = verifyChanged;
-        }
+          const vMetaEntries = metaGate('verify', n);
+          if (vMetaEntries.length) attempt.gitMetaVerify = vMetaEntries;
+          if (vMetaEntries.some((e) => !e.restored)) {
+            attempt.outcome = 'git-meta-not-restored';
+            return metaStop(vMetaEntries, 'verify', { account: account.id });
+          }
+          const vMetaPaths = vMetaEntries.map((e) => e.path);
 
-        if (result.verify.some((v) => !v.ok)) {
-          return finish('VERIFY_FAILED', EXIT.FAILED, {
-            nextAction: 'the changes stay in the working tree. Read the failing tail, then send a fix with `zc dispatch --repair <runId>` or discard with `zc reject`.'
+          let verifyZc;
+          try {
+            verifyZc = restoreZc(root, zcSnap, { saveDir: join(runDir, `zc-violations-verify-${n}`) });
+          } catch (error) {
+            attempt.outcome = 'zc-not-checked';
+            return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+              account: account.id,
+              phase: 'verify',
+              nextAction: `after verify, .zc/ could not be read to check it (${error.code ?? 'error'}: ${error.message}). Nothing was rolled back. The pre-run copy is in ${join(runDir, `zc-snapshot-${n}`)}; fix permissions and compare by hand.`
+            });
+          }
+          if (verifyZc.length) attempt.zcViolationsVerify = verifyZc;
+          const verifyUnrestored = verifyZc.filter((v) => !v.restored);
+          if (verifyUnrestored.length) {
+            attempt.outcome = 'zc-not-restored';
+            return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+              account: account.id,
+              phase: 'verify',
+              forbidden: verifyUnrestored.map((v) => v.path),
+              nextAction: `a verify command changed .zc/ files that could not be restored: ${verifyUnrestored.map((v) => v.path).join(', ')}. Its versions are in ${join(runDir, `zc-violations-verify-${n}`)}; the originals are in ${join(runDir, `zc-snapshot-${n}`)}. Restore them by hand before continuing.`
+            });
+          }
+
+          if (G.head(root) !== head0 || G.branch(root) !== branch0) {
+            attempt.outcome = 'moved-head';
+            return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+              account: account.id,
+              phase: 'verify',
+              nextAction: 'a verify command moved HEAD or switched branches. Nothing was rolled back automatically; inspect with `git reflog`.'
+            });
+          }
+
+          const postEntries = G.statusEntries(root);
+          const postState = G.dirtyState(root);
+          const allKeys = new Set([...Object.keys(workerState), ...Object.keys(postState)]);
+          const verifyChanged = [...allKeys].filter((p) => workerState[p] !== postState[p]).sort();
+          const vScope = partitionByScope(verifyChanged, allowed, config.forbidden);
+          const vZcPaths = verifyZc.map((v) => v.path);
+
+          if (vScope.forbidden.length || vScope.outOfScope.length || vZcPaths.length || vMetaPaths.length) {
+            G.savePartial(root, join(runDir, 'rejected-verify'), postEntries);
+            let rolledBack = resetAllowed && G.rollbackPaths(root, postEntries, G.dirtyState(root)).conflicts.length === 0;
+            const revealed = rolledBack ? revealedAfterRollback(postEntries) : [];
+            if (revealed.length) { rolledBack = false; result.revealedAfterRollback = revealed; }
+            return finish('SCOPE_VIOLATION', EXIT.FAILED, {
+              phase: 'verify',
+              verifyChanged,
+              outOfScope: vScope.outOfScope,
+              forbidden: [...vScope.forbidden, ...vZcPaths, ...vMetaPaths],
+              gitMeta: vMetaEntries,
+              rolledBack,
+              nextAction: rolledBack
+                ? 'a verify command changed files outside the allowed paths (or .zc/); the whole result was saved to the run folder and rolled back. If your build or tests legitimately write these files, add them to `allowed` or .gitignore.'
+                : 'a verify command changed files outside the allowed paths (or .zc/); the tree was left as-is. Review with `git status`, then `zc reject`.'
+            });
+          }
+
+          if (verifyChanged.length) {
+            result.verifyChanged = verifyChanged;
+          }
+
+          if (result.verify.some((v) => !v.ok)) {
+            return finish('VERIFY_FAILED', EXIT.FAILED, {
+              nextAction: 'the changes stay in the working tree. Read the failing tail, then send a fix with `zc dispatch --repair <runId>` or discard with `zc reject`.'
+            }, postState);
+          }
+          return finish('OK', EXIT.OK, {
+            nextAction: 'review `git diff` yourself, run your own checks, then `zc accept <runId>` (stages only this run\'s files) and commit; or send a repair / reject.'
           }, postState);
         }
-        return finish('OK', EXIT.OK, {
-          nextAction: 'review `git diff` yourself, run your own checks, then `zc accept <runId>` (stages only this run\'s files) and commit; or send a repair / reject.'
-        }, postState);
-      }
 
-      const errorText = [p.error, ...p.softErrors, r.error, r.stderr.slice(-2000)].filter(Boolean).join('\n');
-      let kind;
-      if (r.timedOut) kind = 'timeout';
-      else if (p.permissionAsks.length && !p.response) kind = 'permission';
-      else kind = classify(errorText) ?? (r.code === 0 && !p.error ? 'empty' : 'unknown');
-      Object.assign(attempt, {
-        outcome: 'failed', kind, error: (p.error || p.softErrors[0] || r.error || '').slice(0, 300)
-      });
-
-      const settled = settlePartial(n, workerState);
-      attempt.partialSaved = settled.saved;
-      attempt.rolledBack = settled.rolledBack;
-      if (settled.stuck.length) {
-        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-          changed: settled.stuck,
-          nextAction: 'could not roll the working tree back cleanly. Inspect `git status`; the worker\'s partial work is in the run folder.'
+        const errorText = [p.error, ...p.softErrors, r.error, r.stderr.slice(-2000)].filter(Boolean).join('\n');
+        let kind;
+        if (r.timedOut) kind = 'timeout';
+        else if (p.permissionAsks.length && !p.response) kind = 'permission';
+        else kind = classify(errorText) ?? (r.code === 0 && !p.error ? 'empty' : 'unknown');
+        Object.assign(attempt, {
+          outcome: 'failed', kind, error: (p.error || p.softErrors[0] || r.error || '').slice(0, 300)
         });
-      }
 
-      switch (kind) {
-        case 'quota': {
-          const now = Date.now();
-          const hint = parseResetHint(errorText, now, { maxMs: maxCooldownMs });
-          const until = Math.min(hint ?? now + cooldownMs, now + maxCooldownMs);
-          attempt.cooldownSource = hint ? 'hint' : 'default';
-          accounts.cooldown(account.id, until, 'quota');
-          attempt.cooldownUntil = new Date(until).toISOString();
-          continue;
-        }
-        case 'auth':
-          accounts.setStatus(account.id, 'needs-login', attempt.error);
-          continue;
-        case 'license':
-          accounts.setStatus(account.id, 'blocked', 'no Antigravity license');
-          continue;
-        case 'location':
+        const settled = settlePartial(n, workerState);
+        attempt.partialSaved = settled.saved;
+        attempt.rolledBack = settled.rolledBack;
+        if (settled.stuck.length) {
           return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
-            account: account.id,
-            nextAction: 'Google refused the request on location, not on the account. Switching accounts cannot fix that, so none was tried. Run from a location Antigravity serves.'
+            changed: settled.stuck,
+            nextAction: 'could not roll the working tree back cleanly. Inspect `git status`; the worker\'s partial work is in the run folder.'
           });
-        case 'timeout':
-          return finish('TIMEOUT', EXIT.FAILED, {
-            account: account.id,
-            nextAction: 'the worker ran past its time limit. Split the task into smaller pieces rather than raising the limit.'
-          });
-        case 'permission':
-          return finish('DENIED', EXIT.FAILED, {
-            account: account.id,
-            denied: p.denied,
-            nextAction: 'the worker was denied an action under worker.permissions. Rephrase the task to need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.'
-          });
-        default:
-          if (!flakyRetried.has(account.id)) { flakyRetried.add(account.id); continue; } // one unchanged rerun
-          accounts.cooldown(account.id, Date.now() + Math.min(flakyMs, maxCooldownMs), kind);
-          continue;
+        }
+
+        switch (kind) {
+          case 'quota': {
+            const now = Date.now();
+            const hint = parseResetHint(errorText, now, { maxMs: maxCooldownMs });
+            const until = Math.min(hint ?? now + cooldownMs, now + maxCooldownMs);
+            attempt.cooldownSource = hint ? 'hint' : 'default';
+            settleHealth(() => accounts.cooldown(account.id, until, 'quota'));
+            attempt.cooldownUntil = new Date(until).toISOString();
+            continue;
+          }
+          case 'auth':
+            settleHealth(() => accounts.setStatus(account.id, 'needs-login', attempt.error));
+            continue;
+          case 'license':
+            settleHealth(() => accounts.setStatus(account.id, 'blocked', 'no Antigravity license'));
+            continue;
+          case 'location':
+            return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+              account: account.id,
+              nextAction: 'Google refused the request on location, not on the account. Switching accounts cannot fix that, so none was tried. Run from a location Antigravity serves.'
+            });
+          case 'timeout':
+            return finish('TIMEOUT', EXIT.FAILED, {
+              account: account.id,
+              nextAction: 'the worker ran past its time limit. Split the task into smaller pieces rather than raising the limit.'
+            });
+          case 'permission':
+            return finish('DENIED', EXIT.FAILED, {
+              account: account.id,
+              denied: p.denied,
+              nextAction: 'the worker was denied an action under worker.permissions. Rephrase the task to need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.'
+            });
+          default:
+            if (!flakyRetried.has(account.id)) { flakyRetried.add(account.id); continue; } // one unchanged rerun
+            settleHealth(() => accounts.cooldown(account.id, Date.now() + Math.min(flakyMs, maxCooldownMs), kind));
+            continue;
+        }
+      } finally {
+        // A spawned worker whose death was never proven (an error in between) keeps its lease.
+        if (held && !workerUnproven) { settleLease(held); held = null; }
       }
     }
     return finish('FAILED', EXIT.FAILED, {
@@ -580,7 +631,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 export function rejectRun({ root, runId, force = false }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to reject (see `zc runs`)');
-  const release = acquireLock(lockFile(root), { runId: `reject-${prev.runId}` });
+  const release = acquireLock(lockFile(root), { runId: `reject-${prev.runId}`, registry: true });
   let pinned = false;
   try {
     if (prev.gitLayout) {
@@ -628,7 +679,7 @@ export function ackRun({ root, runId }) {
   const prev = runId ? getRun(root, runId) : pendingMetaRun(root);
   if (!prev) throw new Error('no run to acknowledge (see `zc runs`)');
   if (!prev.gitMetaUnrestored) throw new Error(`run ${prev.runId} has nothing to acknowledge (no unrepaired git metadata)`);
-  const release = acquireLock(lockFile(root), { runId: `ack-${prev.runId}` });
+  const release = acquireLock(lockFile(root), { runId: `ack-${prev.runId}`, registry: true });
   try {
     const file = join(runsDir(root), prev.runId, 'result.json');
     writeJsonAtomic(file, { ...readJson(file, prev), gitMetaAcknowledged: new Date().toISOString() });
@@ -648,7 +699,7 @@ export function ackRun({ root, runId }) {
 export function acceptRun({ root, runId, config = {} }) {
   const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to accept (see `zc runs`)');
-  const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}` });
+  const release = acquireLock(lockFile(root), { runId: `accept-${prev.runId}`, registry: true });
   try {
     const pending = pendingMetaRun(root);
     if (pending) {

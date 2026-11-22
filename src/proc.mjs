@@ -48,7 +48,7 @@ export function killTree(child) {
  * { code, signal, timedOut, stdout, stderr, error }.
  */
 export function run(command, args = [], options = {}) {
-  const { cwd, env, input, timeoutMs = 0, maxBytes = 8_000_000, onStdoutLine } = options;
+  const { cwd, env, input, timeoutMs = 0, maxBytes = 8_000_000, onStdoutLine, onSpawn } = options;
   return new Promise((resolve) => {
     let spec;
     try {
@@ -71,6 +71,7 @@ export function run(command, args = [], options = {}) {
       resolve({ code: -1, signal: null, timedOut: false, stdout: '', stderr: '', error: error.message });
       return;
     }
+    try { onSpawn?.(child); } catch { /* a bookkeeping hook must never break the run */ }
     let stdout = '';
     let stderr = '';
     let pending = '';
