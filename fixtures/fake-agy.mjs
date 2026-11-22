@@ -51,9 +51,10 @@ const failResult = (message) => {
 let mode = scenario.mode ?? 'ok';
 if (mode !== 'ok' && calls > (scenario.failTimes ?? Infinity)) mode = 'ok';
 
+if (scenario.ignoreTerm) process.on('SIGTERM', () => {}); // a worker that will not stop politely
 // scenario.trace: shared log of worker start/end times; holdMs: stay alive that long (lets tests overlap workers);
 // orphan: leave a detached grandchild that keeps this profile as its HOME after the worker exits.
-if (scenario.trace) appendFileSync(scenario.trace, `start ${dir} ${Date.now()}\n`);
+if (scenario.trace) appendFileSync(scenario.trace, `start ${dir} ${Date.now()} ${process.pid}\n`);
 if (scenario.holdMs) await new Promise((resolve) => setTimeout(resolve, scenario.holdMs));
 if (scenario.orphan) {
   const { spawn } = await import('node:child_process');
@@ -62,6 +63,8 @@ if (scenario.orphan) {
 process.on('exit', () => { if (scenario.trace) appendFileSync(scenario.trace, `end ${dir} ${Date.now()}\n`); });
 
 if (mode === 'ok' || scenario.partial) writeFiles();
+
+if (scenario.trace) appendFileSync(scenario.trace, `ready ${dir} ${Date.now()}\n`); // files written, orphan spawned: safe to interrupt now
 
 switch (mode) {
   case 'quota': failResult(scenario.message ?? 'RESOURCE_EXHAUSTED: quota exceeded. Please try again in 30 minutes.'); break;

@@ -4,6 +4,7 @@ import * as accounts from './accounts.mjs';
 import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
 import { writeJsonAtomic } from './atomicfile.mjs';
 import { cmdRegistry } from './cli-registry.mjs';
+import { installSignalGuard, resetSignalCaught, signalCaught } from './signals.mjs';
 import { requireAttestation } from './attest.mjs';
 import { ownerAlive, withShortLease } from './reserve.mjs';
 import { registryDir } from './registry-path.mjs';
@@ -11,7 +12,7 @@ import { openRegistry } from './registry.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
-import { acceptRun, ackRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
+import { EXIT, acceptRun, ackRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
 import * as G from './gitx.mjs';
 import { configPath, stateRoot } from './paths.mjs';
 import { run } from './proc.mjs';
@@ -364,7 +365,27 @@ async function cmdDoctor(argv) {
   return checks.every((c) => c.ok || c.level === 'warn') ? 0 : 1;
 }
 
+/**
+ * Reject, accept and ack run synchronously and hold a project lease. A signal must not kill them half way
+ * (the lease would leak and a restore could stop in the middle): it waits until they finish, then exit is 130.
+ */
+export async function deferSignals(operation) {
+  const guard = installSignalGuard({ log: (message) => console.error(`zc: ${message}`) });
+  try { return await operation(); } finally {
+    await guard.yield(); // let a signal that arrived meanwhile be recorded
+    guard.uninstall();
+  }
+}
+
+/** An operation that was stopped by a signal exits 130 whatever it returned. */
 export async function main(argv) {
+  resetSignalCaught();
+  const code = await runCommand(argv);
+  // Only a plain success or failure becomes 130; a stop that needs a human (3) or has no capacity (2) keeps its code.
+  return signalCaught() && (code === 0 || code === 1) ? EXIT.INTERRUPTED : code;
+}
+
+async function runCommand(argv) {
   const [command, ...rest] = argv;
   try {
     switch (command) {
@@ -378,7 +399,7 @@ export async function main(argv) {
       case 'ecc': await cmdEcc(rest); return 0;
       case 'reject': {
         const opts = parseArgs(rest, { bool: ['force'] });
-        const out = rejectRun({ root: projectRoot(opts), runId: opts._[0], force: Boolean(opts.force) });
+        const out = await deferSignals(() => rejectRun({ root: projectRoot(opts), runId: opts._[0], force: Boolean(opts.force) }));
         if (out.conflicts.length) {
           console.log(`zc: PARTIAL rollback of run ${out.runId}: restored ${out.restored.length} file(s); left ${out.conflicts.length} alone:`);
           for (const c of out.conflicts) console.log(`  ${c.path} - ${c.reason}`);
@@ -389,14 +410,14 @@ export async function main(argv) {
       }
       case 'ack': {
         const opts = parseArgs(rest);
-        const out = ackRun({ root: projectRoot(opts), runId: opts._[0] });
+        const out = await deferSignals(() => ackRun({ root: projectRoot(opts), runId: opts._[0] }));
         console.log(`zc: acknowledged git metadata of run ${out.runId}`);
         return 0;
       }
       case 'accept': {
         const opts = parseArgs(rest);
         const root = projectRoot(opts);
-        const out = acceptRun({ root, runId: opts._[0], config: loadConfig(root) });
+        const out = await deferSignals(() => acceptRun({ root, runId: opts._[0], config: loadConfig(root) }));
         console.log(`zc: staged ${out.staged.length} file(s) from run ${out.runId}`);
         for (const p of out.staged) console.log(`  ${p}`);
         if (out.leftAlone.length) console.log(`left alone (not this run's): ${out.leftAlone.join(', ')}`);

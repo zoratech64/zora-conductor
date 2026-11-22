@@ -31,7 +31,14 @@ export function resolveSpawn(command, args) {
   return { command: exe, args, verbatim: false };
 }
 
-export function killTree(child) {
+const tracked = new Set();
+
+/** Stop every process started through run() that is still going (signal handling). */
+export function terminateTracked({ graceMs = 3000 } = {}) {
+  for (const child of tracked) killTree(child, graceMs);
+}
+
+export function killTree(child, graceMs = 3000) {
   if (!child.pid) return;
   if (process.platform === 'win32') {
     try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
@@ -40,7 +47,7 @@ export function killTree(child) {
   try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch { /* gone */ } }
   setTimeout(() => {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-  }, 3000).unref();
+  }, graceMs).unref();
 }
 
 /**
@@ -71,6 +78,7 @@ export function run(command, args = [], options = {}) {
       resolve({ code: -1, signal: null, timedOut: false, stdout: '', stderr: '', error: error.message });
       return;
     }
+    tracked.add(child);
     try { onSpawn?.(child); } catch { /* a bookkeeping hook must never break the run */ }
     let stdout = '';
     let stderr = '';
@@ -95,6 +103,7 @@ export function run(command, args = [], options = {}) {
       ? setTimeout(() => { timedOut = true; killTree(child); }, timeoutMs)
       : null;
     child.on('close', (code, signal) => {
+      tracked.delete(child);
       if (timer) clearTimeout(timer);
       if (onStdoutLine && pending) onStdoutLine(pending);
       resolve({ code: code ?? -1, signal, timedOut, stdout, stderr, error: spawnError });
