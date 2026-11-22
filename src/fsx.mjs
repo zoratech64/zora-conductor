@@ -1,6 +1,4 @@
-import {
-  closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync
-} from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export function readJson(path, fallback = null) {
@@ -12,13 +10,7 @@ export function readJson(path, fallback = null) {
   }
 }
 
-/** Write via temp file + rename so a crash never leaves half a JSON file. */
-export function writeJsonAtomic(path, value) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, path);
-}
+export { writeJsonAtomic } from './atomicfile.mjs';
 
 export function pidAlive(pid) {
   try {

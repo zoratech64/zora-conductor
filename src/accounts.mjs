@@ -5,7 +5,7 @@ import { accountsFile, profileDirFor } from './paths.mjs';
 const ID = /^[a-z0-9][a-z0-9_-]{0,30}$/i;
 
 const load = () => readJson(accountsFile(), { currentId: null, accounts: {} });
-const save = (state) => writeJsonAtomic(accountsFile(), state);
+const save = (state) => writeJsonAtomic(accountsFile(), state, { mode: 0o600 });
 
 export const listAccounts = () => Object.values(load().accounts).sort((a, b) => a.id.localeCompare(b.id));
 export const getAccount = (id) => load().accounts[id] ?? null;

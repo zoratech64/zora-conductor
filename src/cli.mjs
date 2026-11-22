@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import * as accounts from './accounts.mjs';
 import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
+import { writeJsonAtomic } from './atomicfile.mjs';
 import { requireAttestation } from './attest.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
@@ -70,7 +71,7 @@ function cmdInit(root) {
     ecc: { path: '', rulePacks: detected.rulePacks }
   };
   mkdirSync(join(root, '.zc', 'tasks'), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  writeJsonAtomic(file, config, { defaultMode: 0o644 }); // project config is not a secret
   writeFileSync(join(root, '.zc', 'progress.md'), '# Progress log\n\nOne line per accepted task: date, task id, run id, commit.\n');
   writeFileSync(join(root, '.zc', 'tasks', 'TEMPLATE.md'), TASK_TEMPLATE);
   console.log(`zc: initialised ${join(root, '.zc')} (detected: ${detected.stack})`);
