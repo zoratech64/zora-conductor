@@ -8,6 +8,35 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+### Added
+
+- Machine-wide account and project leases in a SQLite registry (`~/.local/state/zora-conductor-registry`): one worker per Google profile on the machine, one zc operation per project, `defaults.maxLiveProjects` (default 2) projects at once. Released only when the worker is proven gone; stale leases are cleared only on proof (Linux, private isolation, dead dispatcher, nothing using the profile, worker group empty).
+- Account attestation (`zc account add --label`, `zc account attest`), enforced at dispatch: an account without a valid, unique, manual attestation is never selected. It is a human claim that `zc` cannot verify.
+- `zc registry status|activate|downgrade` (dry run unless `--apply`) and the versioned accounts store with a fail-closed stub for older executables, with sha256-manifested backups.
+- Signal handling (SIGINT/SIGTERM/SIGHUP): the worker group is stopped, partial work saved, leases kept unless the worker is proven gone; status `INTERRUPTED`, exit 130. Run records are written as `RUNNING` at the start; `zc runs` derives `INTERRUPTED` and `ORPHAN`.
+- `zc recover <runId>` (proof-gated, dry run unless `--yes`, never touches files, status `RECOVERED`) and `--release <account> --confirm ...` for platforms that cannot prove the worker gone.
+- Failure kinds `capacity` and `network` with bounded, interruptible waits (`defaults.capacityWaitSeconds`, `defaults.networkWaitSeconds`; two waits per run, no cooldown, no rotation); end states `NO_CAPACITY` (reason `model-capacity`) and `NETWORK`, exit 2.
+- `defaults.onLimit: "handoff"` with `defaults.maxHandoffs` (default 2): checked partial work goes to the next account through a generated `handoff-n.md`; otherwise `NEEDS_HUMAN`, with the worker's partial work left in the tree (a copy in the run folder). The default stays `reset`.
+- `npm test` runs through `scripts/run-tests.mjs`, which uses a per-run temporary directory and removes it.
+
+### Breaking
+
+- Every account must be attested before it can be used: run `zc account attest <id> --label <name>` for each one, or dispatch refuses with `account-unattested` (exit 3). Hand-edited `accounts.json` entries without an attestation are refused too.
+- After `zc registry activate --apply`, older zc versions see no accounts (a fail-closed stub). Run `zc registry activate` (a dry run) first, `zc registry activate --apply` to commit, and do not run older zc copies afterwards. `zc registry downgrade --apply` reverses it.
+
+### Changed
+
+- The old `dispatch.lock` file is only read; a live older dispatcher blocks, nothing is deleted.
+- The per-project no-hooks directory is created once, verified on every git call and never removed recursively; planted plain files are unlinked, anything else fails closed.
+- `zc status` shows leases, heartbeat age (information only) and recent automatic releases.
+
+### Known limitations
+
+- Process proof reads `/proc` on Linux. Windows and macOS keep exclusivity through leases only; crash recovery there needs a human (`zc recover --release`).
+- The attestation cannot detect two profiles signed in to one Google account; sign-in modes other than Google login are not covered.
+- State shared across PID namespaces (containers) is not supported: a live dispatcher there is invisible.
+- Plugin and CLI skew: the installed Claude plugin copy is not changed by this release.
+
 ## [0.2.0-alpha.3] - 2026-11-18
 
 ### Added
