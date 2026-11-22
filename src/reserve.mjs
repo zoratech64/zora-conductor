@@ -20,7 +20,7 @@ const VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 const refuse = (reason, extra = {}) => ({ ok: false, reason, ...extra });
 
 function ownerIdentity(lease) {
-  if (lease.ownerStart != null && lease.ownerBoot) {
+  if (process.platform === 'linux' && lease.ownerStart != null && lease.ownerBoot) {
     return { pid: lease.ownerPid, identity: 'linux-proc', startTicks: lease.ownerStart, bootId: lease.ownerBoot };
   }
   return { pid: lease.ownerPid, identity: 'pid-only' };
