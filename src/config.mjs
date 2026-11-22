@@ -25,7 +25,9 @@ export const DEFAULTS = {
     networkWaitSeconds: [30, 120],
     verifyTimeoutMinutes: 15,
     /** reset: roll a failed worker's partial edits back (patch saved first). continue: next account picks up. */
-    onLimit: 'reset'
+    onLimit: 'reset',
+    /** handoff only: how many times a run may pass checked partial work to another worker. */
+    maxHandoffs: 2
   },
   forbidden: [],
   worker: {
@@ -39,7 +41,7 @@ export const DEFAULTS = {
   ecc: { path: '', rulePacks: [], maxChars: 40000, assets: [], assetMaxChars: 60000, assetMaxBytes: DEFAULT_ASSET_BYTES }
 };
 
-const ON_LIMIT = ['reset', 'continue'];
+const ON_LIMIT = ['reset', 'continue', 'handoff'];
 const PERMISSIONS = ['read', 'edit', 'all'];
 
 function normalizeCommands(list, where) {
@@ -89,6 +91,7 @@ export function loadConfig(root) {
     }
   }
   parseCount(config.defaults.maxAttempts, 'defaults.maxAttempts', { max: 50 });
+  parseCount(config.defaults.maxHandoffs, 'defaults.maxHandoffs', { min: 0, max: 10 });
   parseCount(config.defaults.maxLiveProjects, 'defaults.maxLiveProjects', { min: 1, max: 16 });
   parseCount(config.defaults.maxCooldownMinutes, 'defaults.maxCooldownMinutes', { min: 1, max: 10080 });
   if (!ON_LIMIT.includes(config.defaults.onLimit)) throw new Error(`defaults.onLimit must be ${ON_LIMIT.join(' or ')}`);

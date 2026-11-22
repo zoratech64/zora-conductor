@@ -10,6 +10,7 @@ import { installSignalGuard, interruptibleSleep } from './signals.mjs';
 import { processIdentity } from './procid.mjs';
 import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
 import { gitLayout } from './gitmeta.mjs';
+import { REPLACEABLE, buildHandoffNote, checkHandoff, stagedPaths } from './handoff.mjs';
 import { runGate, takeMetaBaseline } from './gitmeta-gate.mjs';
 import * as G from './gitx.mjs';
 import { projectKey, runsDir } from './paths.mjs';
@@ -82,7 +83,7 @@ export function effectiveVerify(projectVerify = [], taskVerify = []) {
   return result;
 }
 
-function taskPrompt({ root, task, config, resumeNote }) {
+function taskPrompt({ root, task, config, resumeNote, handoffNote = '' }) {
   const allowed = task.meta.allowed.length ? task.meta.allowed : config.defaults.allowed;
   const verify = effectiveVerify(config.verify, task.meta.verify);
   const { text: eccRulesText, included, excluded, omitted } = selectEccRules(config);
@@ -98,7 +99,8 @@ function taskPrompt({ root, task, config, resumeNote }) {
       allowed,
       forbiddenExtra: config.forbidden,
       verify,
-      resumeNote
+      resumeNote,
+      handoffNote
     })
   };
 }
@@ -214,6 +216,10 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
     const dirty = G.statusEntries(root);
     let resetAllowed = config.defaults.onLimit === 'reset';
+    const handoffMode = config.defaults.onLimit === 'handoff';
+    const stagedAtStart = stagedPaths(dirty);
+    let handoffNote = '';
+    let handoffs = 0;
     let resumeNote = '';
     let inheritable = false;
     let baseline = null;
@@ -309,6 +315,35 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       };
     };
 
+    /**
+     * Under onLimit=handoff, at the moment an attempt's failure would move the run to another worker: if the tree holds
+     * partial work, check it and write handoff-n.md, or stop with NEEDS_HUMAN and the tree untouched. Returns the
+     * finish() result to return, or null to go on.
+     */
+    const handoffGate = ({ kind, attempt, account, errorText, response, workerState, health }) => {
+      if (!handoffMode) return null;
+      const entries = G.statusEntries(root);
+      if (!entries.length) return null; // nothing to hand over
+      const stop = (why) => {
+        settleHealth(health); // the account's quota, login or license state is still true, whatever happens to the tree
+        return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+        account: account.id, changed: G.changedPaths(entries),
+        nextAction: `partial work was NOT handed to another worker: ${why}. The working tree was left exactly as the worker left it (a copy is in partial-${attempt.n}). Review it, then \`zc reject\` to discard or dispatch a repair.`
+        });
+      };
+      if (!REPLACEABLE.has(kind)) return stop(`a ${kind} failure is not something another worker fixes`);
+      const verdict = checkHandoff({ entries, allowed, forbidden: config.forbidden, workerState, baseline, inheritable, prevChanged, stagedAtStart, done: handoffs, max: config.defaults.maxHandoffs });
+      if (!verdict.ok) return stop(verdict.reasons.join('; '));
+      if (!verdict.newWork) return null; // only the repair baseline is in the tree: nothing new to hand over
+      handoffs++;
+      handoffNote = buildHandoffNote({ root, task, allowed, entries, workerState, attempt, kind, errorText, response, number: handoffs });
+      writeFileSync(join(runDir, `handoff-${handoffs}.md`), handoffNote, { mode: 0o600 });
+      attempt.handoff = handoffs;
+      return null;
+    };
+
+    /** Under handoff a failure that is not handed on leaves the partial work in the tree: say so. */
+    const leftover = () => (handoffMode && G.statusEntries(root).length ? ' Partial work was left in the working tree (a copy is in the run folder); review it with `git status`, then `zc reject` to discard or dispatch a repair.' : '');
     const settleHealth = (health) => { settleLease(held, health); held = null; }; // health update and release in one transaction
     let held = null; // the account lease of the attempt in progress; null once released or deliberately kept
     while (result.attempts.length - freeAttempts < config.defaults.maxAttempts) {
@@ -333,7 +368,8 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         result.attempts.push(attempt);
         log(`attempt ${n} on ${account.id}`);
 
-        const { prompt } = taskPrompt({ root, task, config, resumeNote });
+        const { prompt } = taskPrompt({ root, task, config, resumeNote, handoffNote });
+        handoffNote = ''; // a note describes one handoff; a later retry on the same tree must not repeat stale paths
         writeFileSync(join(runDir, `attempt-${n}.prompt.txt`), prompt);
         let zcSnap;
         try {
@@ -624,8 +660,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             const now = Date.now();
             const hint = parseResetHint(errorText, now, { maxMs: maxCooldownMs });
             const until = Math.min(hint ?? now + cooldownMs, now + maxCooldownMs);
+            const health = () => accounts.cooldown(account.id, until, 'quota');
+            const stopped = handoffGate({ kind, attempt, account, errorText, response: p.response, workerState, health });
+            if (stopped) return stopped;
             attempt.cooldownSource = hint ? 'hint' : 'default';
-            settleHealth(() => accounts.cooldown(account.id, until, 'quota'));
+            settleHealth(health);
             attempt.cooldownUntil = new Date(until).toISOString();
             continue;
           }
@@ -636,8 +675,8 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
               return finish(capacity ? 'NO_CAPACITY' : 'NETWORK', EXIT.NO_CAPACITY, {
                 account: account.id, reason: capacity ? 'model-capacity' : 'network',
                 nextAction: capacity
-                  ? 'the model had no capacity after two waits. No account was cooled down or changed. Dispatch again later.'
-                  : 'this machine could not reach the service after two waits. No account was changed. Check the network, then dispatch again.'
+                  ? 'the model had no capacity after two waits. No account was cooled down or changed. Dispatch again later.' + leftover()
+                  : 'this machine could not reach the service after two waits. No account was changed. Check the network, then dispatch again.' + leftover()
               });
             }
             const list = capacity ? config.defaults.capacityWaitSeconds : config.defaults.networkWaitSeconds;
@@ -651,31 +690,44 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             }
             continue;
           }
-          case 'auth':
-            settleHealth(() => accounts.setStatus(account.id, 'needs-login', attempt.error));
+          case 'auth': {
+            const health = () => accounts.setStatus(account.id, 'needs-login', attempt.error);
+            const stopped = handoffGate({ kind, attempt, account, errorText, response: p.response, workerState, health });
+            if (stopped) return stopped;
+            settleHealth(health);
             continue;
-          case 'license':
-            settleHealth(() => accounts.setStatus(account.id, 'blocked', 'no Antigravity license'));
+          }
+          case 'license': {
+            const health = () => accounts.setStatus(account.id, 'blocked', 'no Antigravity license');
+            const stopped = handoffGate({ kind, attempt, account, errorText, response: p.response, workerState, health });
+            if (stopped) return stopped;
+            settleHealth(health);
             continue;
+          }
           case 'location':
             return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
               account: account.id,
-              nextAction: 'Google refused the request on location, not on the account. Switching accounts cannot fix that, so none was tried. Run from a location Antigravity serves.'
+              nextAction: 'Google refused the request on location, not on the account. Switching accounts cannot fix that, so none was tried. Run from a location Antigravity serves.' + leftover()
             });
           case 'timeout':
             return finish('TIMEOUT', EXIT.FAILED, {
               account: account.id,
-              nextAction: 'the worker ran past its time limit. Split the task into smaller pieces rather than raising the limit.'
+              nextAction: 'the worker ran past its time limit. Split the task into smaller pieces rather than raising the limit.' + leftover()
             });
           case 'permission':
             return finish('DENIED', EXIT.FAILED, {
               account: account.id,
               denied: p.denied,
-              nextAction: 'the worker was denied an action under worker.permissions. Rephrase the task to need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.'
+              nextAction: 'the worker was denied an action under worker.permissions. Rephrase the task to need only file edits, or set worker.permissions to "all" in .zc/config.json if you accept that risk.' + leftover()
             });
           default:
             if (!flakyRetried.has(account.id)) { flakyRetried.add(account.id); continue; } // one unchanged rerun
-            settleHealth(() => accounts.cooldown(account.id, Date.now() + Math.min(flakyMs, maxCooldownMs), kind));
+            {
+              const health = () => accounts.cooldown(account.id, Date.now() + Math.min(flakyMs, maxCooldownMs), kind);
+              const stopped = handoffGate({ kind, attempt, account, errorText, response: p.response, workerState, health });
+              if (stopped) return stopped;
+              settleHealth(health);
+            }
             continue;
         }
       } finally {
