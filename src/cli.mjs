@@ -3,6 +3,7 @@ import { basename, join, resolve } from 'node:path';
 import * as accounts from './accounts.mjs';
 import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
 import { writeJsonAtomic } from './atomicfile.mjs';
+import { cmdRegistry } from './cli-registry.mjs';
 import { requireAttestation } from './attest.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
@@ -39,6 +40,8 @@ Accounts (machine-global):
   zc account login <id>                   sign in again
   zc account check [<id>]                 verify sign-in and read quota windows
   zc account list | reset <id> | remove <id>
+  zc registry status                      accounts store state and registry location
+  zc registry activate|downgrade [--apply]  move accounts to the versioned store or back (dry run unless --apply)
 
 Other:
   zc --version                            print the zora-conductor version
@@ -345,6 +348,7 @@ export async function main(argv) {
       case '--version': console.log(packageVersion()); return 0;
       case 'init': cmdInit(projectRoot(parseArgs(rest))); return 0;
       case 'account': await cmdAccount(rest); return 0;
+      case 'registry': await cmdRegistry(rest); return 0;
       case 'dispatch': return await cmdDispatch(rest);
       case 'doctor': return await cmdDoctor(rest);
       case 'ecc': await cmdEcc(rest); return 0;

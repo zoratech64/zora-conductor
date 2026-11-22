@@ -13,6 +13,9 @@ import { isAbsolute, join } from 'node:path';
  */
 export function registryDir({ dir, env = process.env, platform = process.platform, home = homedir() } = {}) {
   if (dir) return dir;
+  if (env.NODE_TEST_CONTEXT && !env.ZC_TEST_REGISTRY_DIR) {
+    throw new Error('running under node --test without ZC_TEST_REGISTRY_DIR: refusing to touch the real registry (import test/helpers.mjs)');
+  }
   if (env.ZC_TEST_REGISTRY_DIR) {
     if (env.ZC_TESTING !== '1' || !isAbsolute(env.ZC_TEST_REGISTRY_DIR)) {
       throw new Error('ZC_TEST_REGISTRY_DIR needs ZC_TESTING=1 and an absolute path; it splits the registry and defeats account leases. Unset it.');

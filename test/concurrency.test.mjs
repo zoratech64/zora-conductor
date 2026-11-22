@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import './helpers.mjs';
 import { openRegistry } from '../src/registry.mjs';
 
 const WORKER = resolve(import.meta.dirname, 'registry-worker.mjs');
@@ -64,3 +65,41 @@ test('8 processes opening a brand-new registry at the same moment all succeed', 
     assert.deepEqual(results.map((r) => r.duplicates), Array(8).fill(0));
   }
 });
+
+const MUTATOR = resolve(import.meta.dirname, 'accounts-mutator.mjs');
+
+async function mutateInParallel(root, registry, mode) {
+  const results = await Promise.all(Array.from({ length: 6 }, (_, i) => new Promise((done, fail) => {
+    const env = { ...process.env, ZC_HOME: root, ZC_TESTING: '1', ZC_TEST_REGISTRY_DIR: registry };
+    const child = spawn(process.execPath, [MUTATOR, String(i), '40', mode], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let err = '';
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('exit', (code) => (code === 0 ? done() : fail(new Error(`mutator ${i} exit ${code}: ${err}`))));
+  })));
+  return results.length;
+}
+
+for (const mode of ['legacy', 'active']) {
+  test(`test 2 (${mode} store): 6 processes x 40 account mutations lose no update`, { timeout: 300000 }, async () => {
+    const root = tmp('zc-acc-');
+    const registry = join(tmp('zc-accreg-'), 'registry');
+    if (mode === 'active') {
+      const { activate } = await import('../src/migrate.mjs');
+      process.env.ZC_HOME = root;
+      process.env.ZC_TESTING = '1';
+      process.env.ZC_TEST_REGISTRY_DIR = registry;
+      activate({ root, apply: true, scan: () => ({ verdict: 'none', pids: [] }) });
+    }
+    await mutateInParallel(root, registry, mode);
+    process.env.ZC_HOME = root;
+    process.env.ZC_TESTING = '1';
+    process.env.ZC_TEST_REGISTRY_DIR = registry;
+    const accountsApi = await import('../src/accounts.mjs');
+    const list = accountsApi.listAccounts();
+    assert.equal(list.length, 240, 'every added account is present');
+    for (let p = 0; p < 6; p++) {
+      assert.equal(list.filter((a) => a.id.startsWith(`p${p}-`)).length, 40);
+      assert.equal(accountsApi.getAccount(`p${p}-0`).lastUsedAt, 40 - 1 + 1000, 'last update of the shared counter field is kept');
+    }
+  });
+}

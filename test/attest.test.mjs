@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import './helpers.mjs';
 import * as accounts from '../src/accounts.mjs';
 import { ATTEST_PHRASE, attestationText, normalizeLabel, requireAttestation } from '../src/attest.mjs';
 
