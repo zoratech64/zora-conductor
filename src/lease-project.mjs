@@ -2,6 +2,7 @@ import { pidAlive } from './fsx.mjs';
 import { inspectLock, withAccountsLock } from './migrate.mjs';
 import { lockFile, projectKey, stateRoot } from './paths.mjs';
 import { processIdentity } from './procid.mjs';
+import { reconcile } from './reconcile.mjs';
 import { VERSION, ownerAlive } from './reserve.mjs';
 
 /**
@@ -16,11 +17,12 @@ import { VERSION, ownerAlive } from './reserve.mjs';
  * that starts in the instant between the check and the insert is not seen. Do not run older copies.
  */
 
-export function acquireProjectLease({ root, runId }) {
+export function acquireProjectLease({ root, runId, deps = {} }) {
   const key = `project:${projectKey(root)}`;
   return withAccountsLock((registry) => {
     const legacy = inspectLock(lockFile(root), pidAlive);
     if (legacy) throw new Error(`an older zc is using this project (${legacy}; see ${lockFile(root)}); it does not take leases. Wait for it to finish; do not run older zc copies.`);
+    reconcile(registry, { deps }); // proven-stale leases of dead zc processes are cleared first
     const self = processIdentity(process.pid);
     const taken = registry.acquireLease({
       key, kind: 'project', runId, projectKey: projectKey(root), stateRoot: stateRoot(), zcVersion: VERSION,

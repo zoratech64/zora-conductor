@@ -82,6 +82,12 @@ const SCHEMA = `
     acquired_at INTEGER NOT NULL,
     heartbeat_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    lease_key TEXT, run_id TEXT, kind TEXT, reason TEXT, detail TEXT
+  );
   INSERT OR IGNORE INTO meta (name, value) VALUES ('schema_version', '1');`;
 
 const toLease = (row) => row && ({
@@ -166,6 +172,8 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
   const selectOne = db.prepare('SELECT * FROM leases WHERE key = ?');
   const listAll = db.prepare('SELECT * FROM leases ORDER BY acquired_at, key');
   const remove = db.prepare('DELETE FROM leases WHERE key = ? AND run_id = ?');
+  const addEvent = db.prepare('INSERT INTO events (at, action, lease_key, run_id, kind, reason, detail) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const recent = db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?');
   const setWorker = db.prepare('UPDATE leases SET worker_pid = ?, worker_pgid = ?, worker_start = ? WHERE key = ? AND run_id = ?');
   const beat = db.prepare('UPDATE leases SET heartbeat_at = ? WHERE key = ? AND run_id = ?');
   const insert = db.prepare(`INSERT INTO leases (key, kind, run_id, project_key, state_root, owner_pid, owner_start, owner_boot,
@@ -196,6 +204,11 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
     /** Only the run that holds the lease can release it. */
     releaseLease: (key, runId) => withTx(() =>
       Number(remove.run(key, runId).changes) > 0),
+    /** Audit trail of automatic decisions (a lease reaped). */
+    recordEvent: ({ key, runId, kind, reason, detail }) => withTx(() => {
+      addEvent.run(now(), 'reaped', key, runId, kind, reason, JSON.stringify(detail ?? {}));
+    }),
+    listEvents: (limit = 20) => recent.all(limit).map((e) => ({ at: e.at, action: e.action, key: e.lease_key, runId: e.run_id, kind: e.kind, reason: e.reason, detail: JSON.parse(e.detail || '{}') })),
     /** Record the worker process once it exists (pid, process group, start time). */
     updateWorker: (key, runId, { pid, pgid, start }) => withTx(() =>
       Number(setWorker.run(pid ?? null, pgid ?? null, start ?? null, key, runId).changes) > 0),

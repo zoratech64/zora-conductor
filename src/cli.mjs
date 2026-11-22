@@ -173,8 +173,13 @@ function printLeases() {
   try { registry = openRegistry(); } catch (error) { return console.log(`leases: unavailable (${error.message})`); }
   try {
     const rows = registry.listLeases();
-    if (!rows.length) return console.log('leases: none');
-    for (const l of rows) console.log(`lease ${l.key}  ${l.kind}  run ${l.runId}  owner pid ${l.ownerPid}${ownerAlive(l) ? '' : ' (GONE)'}  ${l.profilePath ?? ''}`);
+    if (!rows.length) console.log('leases: none');
+    // The heartbeat age is only information: it never decides whether a lease is stale.
+    const safe = (x) => String(x ?? '').replace(/[\x00-\x1f\x7f-\x9f]/g, '?'); // registry text is data, never terminal control codes
+    for (const l of rows) console.log(`lease ${safe(l.key)}  ${safe(l.kind)}  run ${safe(l.runId)}  owner pid ${safe(l.ownerPid)}${ownerAlive(l) ? '' : ' (GONE)'}  last seen ${Math.round((Date.now() - l.heartbeatAt) / 1000)}s ago  ${safe(l.profilePath)}`);
+    try {
+      for (const e of registry.listEvents(5)) console.log(`reaped ${new Date(e.at).toISOString()}  ${safe(e.key)}  run ${safe(e.runId)}  (${safe(e.reason)})`);
+    } catch { console.log('reaped: unavailable (unreadable event record)'); }
   } finally { registry.close(); }
 }
 

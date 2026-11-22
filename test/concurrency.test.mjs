@@ -144,7 +144,7 @@ function overlaps(events) {
 }
 
 test('test 8: 8 dispatches over 3 accounts run at most 3 at a time and never share an account', { timeout: 300000 }, async () => {
-  const world = await dispatchWorld({ projects: 8, accountIds: ['g1', 'g2', 'g3'], holdMs: 500, maxLiveProjects: 8 });
+  const world = await dispatchWorld({ projects: 8, accountIds: ['g1', 'g2', 'g3'], holdMs: 2000, maxLiveProjects: 8 });
   assert.equal(world.results.length, 8);
   for (const r of world.results) assert.notEqual(r.status, 'NEEDS_HUMAN', JSON.stringify(r));
   assert.equal(world.events.filter((e) => e[0] === 'start').length, 8, 'every dispatch ran a worker exactly once');

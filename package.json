@@ -6,7 +6,7 @@
   "bin": { "zc": "bin/zc.mjs" },
   "engines": { "node": ">=22.13" },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node scripts/run-tests.mjs",
     "check": "node scripts/check-syntax.mjs && node scripts/check-versions.mjs && node scripts/check-notices.mjs"
   },
   "license": "MIT",

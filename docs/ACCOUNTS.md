@@ -52,3 +52,7 @@ So the rule is an operational restriction that you attest to, and `zc` enforces 
 - Accounts created before this rule start unattested and are never filled in automatically. Enforcement at dispatch (accounts without a valid, unique attestation are never selected) arrives with the account-lease change (MPW-004); until that ships, this is recorded and shown but not yet enforced.
 
 Limits, stated plainly: the attestation is a human claim that `zc` cannot verify. A false or deliberately different label defeats it. Two profiles on one Google account share one quota and break the one-lease-per-account guarantee. Sign-in modes other than Google login are not covered. If agy ever gains a supported identity command, that is a follow-up, not something to adopt silently.
+
+### Stale leases and known limits
+
+`zc` frees a lease left by a dead dispatcher only when it can prove the worker is gone (dispatcher dead by pid, start time and boot id; no process on the profile; worker process group empty). Anything it cannot read keeps the lease. Limit: process identity is read from this machine's `/proc`. If the state directory is shared with a container or another PID namespace (distrobox, docker bind mount), a live dispatcher there is invisible, so do not share one state directory across PID namespaces.
