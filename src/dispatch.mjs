@@ -5,6 +5,7 @@ import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
 import { readJson, writeJsonAtomic } from './fsx.mjs';
 import { acquireProjectLease } from './lease-project.mjs';
+import { installSignalGuard } from './signals.mjs';
 import { processIdentity } from './procid.mjs';
 import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
 import { gitLayout } from './gitmeta.mjs';
@@ -19,7 +20,7 @@ import { restoreZc, sameState, snapshotZc } from './snapshot.mjs';
 import { runVerify } from './verify.mjs';
 
 /** Exit codes the manager branches on. */
-export const EXIT = { OK: 0, FAILED: 1, NO_CAPACITY: 2, NEEDS_HUMAN: 3 };
+export const EXIT = { OK: 0, FAILED: 1, NO_CAPACITY: 2, NEEDS_HUMAN: 3, INTERRUPTED: 130 };
 
 const REPAIR_NOTE =
   'The working tree already contains your earlier, uncommitted work on this task. Read it first, ' +
@@ -171,6 +172,8 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: error.message });
   }
 
+  const guard = installSignalGuard({ log: (message) => console.error(`zc: ${message}`) });
+  const interruptedBefore = (extra = {}) => finish('INTERRUPTED', EXIT.INTERRUPTED, { signal: guard.signal, ...extra });
   try {
     const last = pendingMetaRun(root, id);
     metaBlocked = Boolean(last);
@@ -292,6 +295,10 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     const settleHealth = (health) => { settleLease(held, health); held = null; }; // health update and release in one transaction
     let held = null; // the account lease of the attempt in progress; null once released or deliberately kept
     while (result.attempts.length < config.defaults.maxAttempts) {
+      await guard.yield();
+      if (guard.interrupted()) {
+        return interruptedBefore({ nextAction: 'interrupted before the next worker started; this run changed nothing since its last attempt.' });
+      }
       let got;
       try {
         got = reserve({ root, runId: id, maxProjects: config.defaults.maxLiveProjects });
@@ -342,13 +349,18 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         attempt.durationMs = Date.now() - started;
         // The lease is released only when the worker is proven gone; otherwise the account stays reserved for a human.
         const proof = proveWorkerGone({ profileDir: account.profileDir, pgid: spawned?.pgid, worker: spawned?.worker });
+        await guard.yield();
+        const stopped = guard.interrupted();
         if (!proof.gone) {
           attempt.outcome = 'worker-unproven';
           const lease = held;
           held = null; // keep the lease
+          // The group still has members, so its id cannot have been reused: finish what the 5 s timer may not get to.
+          if (stopped && proof.group === 'found' && process.platform !== 'win32') { try { process.kill(-spawned.pgid, 'SIGKILL'); } catch { /* gone */ } }
           // false: run no git at all, the worker may still be writing to the repository and its config
-          return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, {
+          return finish(stopped ? 'INTERRUPTED' : 'NEEDS_HUMAN', stopped ? EXIT.INTERRUPTED : EXIT.NEEDS_HUMAN, {
             account: account.id,
+            ...(stopped ? { signal: guard.signal, orphan: true } : {}),
             nextAction: `the worker's processes could not be proven gone (group ${proof.group}, profile scan ${proof.scan}${proof.pids?.length ? `, pids ${proof.pids.join(' ')}` : ''}). The account stays reserved (lease ${lease.key}) and so does this project (lease project:${projectKey(root)}); no git command was run. Check for stray agy processes, then release it by hand.`
           }, false);
         }
@@ -396,6 +408,16 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           });
         }
 
+        await guard.yield();
+        if (guard.interrupted()) {
+          attempt.outcome = 'interrupted';
+          const entries = G.statusEntries(root);
+          if (entries.length) G.savePartial(root, join(runDir, `partial-${n}`), entries);
+          return finish('INTERRUPTED', EXIT.INTERRUPTED, {
+            account: account.id, signal: guard.signal, partialSaved: entries.length > 0, changed: G.changedPaths(entries),
+            nextAction: `stopped by ${guard.signal}: the worker is gone and the working tree was left exactly as it was${entries.length ? `; its partial work is also saved in partial-${n}` : ''}. Inspect \`git status\`, then \`zc reject\` to discard or dispatch a repair.`
+          }, workerState);
+        }
         const p = r.parsed;
         // The edits are the deliverable, so an empty written report is not a failure: git decides (NO_CHANGES below).
         const succeeded = !r.timedOut && !r.error && r.code === 0 && p.status === 'SUCCESS' && !p.error;
@@ -467,7 +489,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             }
           }
           const vStarted = Date.now();
-          result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000 });
+          result.verify = await runVerify(root, verifyCmds, { timeoutMs: config.defaults.verifyTimeoutMinutes * 60_000, stop: () => guard.interrupted() });
           result.verifyDurationMs = Date.now() - vStarted;
 
           const vMetaEntries = metaGate('verify', n);
@@ -477,6 +499,13 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             return metaStop(vMetaEntries, 'verify', { account: account.id });
           }
           const vMetaPaths = vMetaEntries.map((e) => e.path);
+          await guard.yield();
+          if (guard.interrupted()) {
+            return finish('INTERRUPTED', EXIT.INTERRUPTED, {
+              account: account.id, signal: guard.signal, phase: 'verify', changed,
+              nextAction: `stopped by ${guard.signal} during verification: the worker's work is in the tree, unverified. Run your own checks, then accept or reject.`
+            }, G.dirtyState(root));
+          }
 
           let verifyZc;
           try {
@@ -619,8 +648,13 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       nextAction: `a git call could not run safely (${error.message}). Check the repository by hand before running git commands in it; the working tree was not rolled back.`
     }, false);
   } finally {
-    G.unpinLayout(root);
-    if (!workerUnproven) release(); // an unproven worker may still write here: the project stays leased
+    try {
+      G.unpinLayout(root);
+      await guard.yield(); // a signal that arrived during the last synchronous stretch is still recorded
+    } finally {
+      guard.uninstall();
+      if (!workerUnproven) release();
+    } // an unproven worker may still write here: the project stays leased
   }
 }
 
