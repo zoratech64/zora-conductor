@@ -99,12 +99,22 @@ export function writeAccountsState(kind, data, root = stateRoot()) {
 }
 
 /** Serialize every accounts mutation machine-wide (one short registry transaction). */
+let heldRegistry = null;
+/** Re-entrant: a call made while the lock is held runs inline. `fn` receives the open registry. */
 export function withAccountsLock(fn) {
+  if (heldRegistry) return fn(heldRegistry);
   const registry = openRegistry();
-  try { return registry.withTx(fn); } finally { registry.close(); }
+  try {
+    heldRegistry = registry;
+    return registry.withTx(() => fn(registry));
+  } finally {
+    heldRegistry = null;
+    registry.close();
+  }
 }
 
-function liveDispatchers(root, alive) {
+/** Live dispatchers by their lock files. `legacyOnly` skips locks written by registry-aware zc (peers, not legacy writers). */
+export function liveDispatchers(root, alive, { legacyOnly = false } = {}) {
   const found = [];
   const projects = join(root, 'projects');
   if (!existsSync(projects)) return found;
@@ -119,6 +129,7 @@ function liveDispatchers(root, alive) {
       continue;
     }
     const pid = lock.json?.pid;
+    if (legacyOnly && lock.json?.registry === true) continue;
     if (Number.isInteger(pid) && pid !== process.pid && alive(pid)) found.push(`${name} (pid ${pid})`);
   }
   return found;

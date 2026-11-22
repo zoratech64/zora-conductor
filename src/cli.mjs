@@ -5,6 +5,9 @@ import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
 import { writeJsonAtomic } from './atomicfile.mjs';
 import { cmdRegistry } from './cli-registry.mjs';
 import { requireAttestation } from './attest.mjs';
+import { ownerAlive, withShortLease } from './reserve.mjs';
+import { registryDir } from './registry-path.mjs';
+import { openRegistry } from './registry.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
@@ -92,7 +95,7 @@ async function cmdAccount(argv) {
       const account = accounts.addAccount(id, { identity });
       console.log(`zc: created profile ${account.profileDir}`);
       if (opts['no-login']) return;
-      await signIn(account);
+      await withShortLease(account, 'login', () => signIn(account));
       return;
     }
     case 'attest': {
@@ -106,13 +109,20 @@ async function cmdAccount(argv) {
     case 'login': {
       const account = accounts.getAccount(id);
       if (!account) throw new Error(`unknown account "${id}"`);
-      await signIn(account);
+      await withShortLease(account, 'login', () => signIn(account));
       return;
     }
     case 'check': {
       const targets = id ? [accounts.getAccount(id)].filter(Boolean) : accounts.listAccounts();
       if (!targets.length) throw new Error(id ? `unknown account "${id}"` : 'no accounts yet');
-      for (const account of targets) await verifyAccount(account);
+      const refused = [];
+      for (const account of targets) {
+        try { await withShortLease(account, 'check', () => verifyAccount(account)); } catch (error) {
+          console.log(`zc: ${account.id}: ${error.message}`);
+          refused.push(account.id);
+        }
+      }
+      if (refused.length) throw new Error(`not checked: ${refused.join(', ')}`);
       return;
     }
     case 'list': return printAccounts();
@@ -151,6 +161,20 @@ async function verifyAccount(account) {
   if (isolationMode() === 'none') {
     console.log('zc: warning — isolation is off. If agy keeps its login in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md.');
   }
+}
+
+/** Account leases from the machine-wide registry (does not create the registry just to look). */
+function printLeases() {
+  const dir = registryDir();
+  console.log(`\nregistry: ${dir}`);
+  if (!existsSync(join(dir, 'registry.db'))) return console.log('leases: none (no registry yet)');
+  let registry;
+  try { registry = openRegistry(); } catch (error) { return console.log(`leases: unavailable (${error.message})`); }
+  try {
+    const rows = registry.listLeases();
+    if (!rows.length) return console.log('leases: none');
+    for (const l of rows) console.log(`lease ${l.key}  ${l.kind}  run ${l.runId}  owner pid ${l.ownerPid}${ownerAlive(l) ? '' : ' (GONE)'}  ${l.profilePath ?? ''}`);
+  } finally { registry.close(); }
 }
 
 function printAccounts() {
@@ -385,6 +409,7 @@ export async function main(argv) {
       case 'status': {
         const opts = parseArgs(rest);
         printAccounts();
+        printLeases();
         const root = G.toplevel(resolve(opts.project ?? process.cwd()));
         const last = root ? listRuns(root, 1)[0] : null;
         if (last) console.log(`\nlatest run: ${last.runId} ${last.status} (${last.taskId})`);

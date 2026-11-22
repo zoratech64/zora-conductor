@@ -1,4 +1,5 @@
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 export function readJson(path, fallback = null) {
@@ -22,6 +23,26 @@ export function pidAlive(pid) {
 }
 
 /**
+ * Create `path` only if it does not exist, with its content already in place, so a
+ * concurrent reader never sees an empty or half-written lock. Writes a temp file and
+ * hard-links it into place (atomic and exclusive); filesystems without hard links fall back to O_EXCL.
+ */
+function createExclusive(path, content) {
+  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.lock-tmp`;
+  writeFileSync(tmp, content, { flag: 'wx' });
+  try {
+    linkSync(tmp, path);
+  } catch (error) {
+    if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS'].includes(error.code)) throw error;
+    const fd = openSync(path, 'wx');
+    writeFileSync(fd, content);
+    closeSync(fd);
+  } finally {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+  }
+}
+
+/**
  * Exclusive lock file. Only one dispatch may write to a project at a time;
  * a lock whose owner process is gone is taken over.
  */
@@ -29,9 +50,7 @@ export function acquireLock(path, info = {}) {
   mkdirSync(dirname(path), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const fd = openSync(path, 'wx');
-      writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: Date.now(), ...info }));
-      closeSync(fd);
+      createExclusive(path, JSON.stringify({ pid: process.pid, startedAt: Date.now(), ...info }));
       return () => {
         try { unlinkSync(path); } catch { /* already gone */ }
       };

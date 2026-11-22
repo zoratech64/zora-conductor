@@ -51,6 +51,16 @@ const failResult = (message) => {
 let mode = scenario.mode ?? 'ok';
 if (mode !== 'ok' && calls > (scenario.failTimes ?? Infinity)) mode = 'ok';
 
+// scenario.trace: shared log of worker start/end times; holdMs: stay alive that long (lets tests overlap workers);
+// orphan: leave a detached grandchild that keeps this profile as its HOME after the worker exits.
+if (scenario.trace) appendFileSync(scenario.trace, `start ${dir} ${Date.now()}\n`);
+if (scenario.holdMs) await new Promise((resolve) => setTimeout(resolve, scenario.holdMs));
+if (scenario.orphan) {
+  const { spawn } = await import('node:child_process');
+  spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, HOME: join(dir, 'home') } }).unref();
+}
+process.on('exit', () => { if (scenario.trace) appendFileSync(scenario.trace, `end ${dir} ${Date.now()}\n`); });
+
 if (mode === 'ok' || scenario.partial) writeFiles();
 
 switch (mode) {

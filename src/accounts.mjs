@@ -97,14 +97,15 @@ export const isEligible = (account, now = Date.now()) =>
  * Sticky selection: keep using the current account until it is exhausted, then
  * fall back to the least recently used eligible one.
  */
-export function pickNext({ now = Date.now(), exclude = [] } = {}) {
+export function candidates({ now = Date.now(), exclude = [] } = {}) {
   const state = load();
   const eligible = Object.values(state.accounts).filter((a) => isEligible(a, now) && !exclude.includes(a.id));
-  if (!eligible.length) return null;
-  const current = eligible.find((a) => a.id === state.currentId);
-  if (current) return current;
-  return eligible.sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0) || a.id.localeCompare(b.id))[0];
+  const lru = eligible.sort((a, b) => (a.lastUsedAt || 0) - (b.lastUsedAt || 0) || a.id.localeCompare(b.id));
+  const current = lru.find((a) => a.id === state.currentId);
+  return current ? [current, ...lru.filter((a) => a !== current)] : lru;
 }
+
+export const pickNext = (options) => candidates(options)[0] ?? null;
 
 export const markUsed = (id) => mutate((state) => {
   if (!own(state.accounts, id)) return;

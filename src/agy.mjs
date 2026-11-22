@@ -184,7 +184,7 @@ export function parseAgyOutput(text) {
  * Run one worker task on one account. The prompt travels on stdin, never argv
  * (no quoting problems, no length limit on Windows).
  */
-export async function runAgy({ account, prompt, cwd, timeoutSec, permissions, model, effort }) {
+export async function runAgy({ account, prompt, cwd, timeoutSec, permissions, model, effort, onSpawn }) {
   const spec = findAgy();
   const args = [
     ...spec.prefix,
@@ -192,7 +192,7 @@ export async function runAgy({ account, prompt, cwd, timeoutSec, permissions, mo
   ];
   const input = `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`;
   const plan = launchPlan(account, spec, args);
-  const result = await run(plan.command, plan.args, { cwd, env: plan.env, input, timeoutMs: timeoutSec * 1000 });
+  const result = await run(plan.command, plan.args, { cwd, env: plan.env, input, timeoutMs: timeoutSec * 1000, onSpawn });
   return { ...result, parsed: parseAgyOutput(`${result.stdout}\n${result.stderr}`) };
 }
 

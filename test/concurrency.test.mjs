@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -103,3 +103,71 @@ for (const mode of ['legacy', 'active']) {
     }
   });
 }
+
+const DRIVER = resolve(import.meta.dirname, 'dispatch-driver.mjs');
+
+function drive(root, env) {
+  return new Promise((done, fail) => {
+    const child = spawn(process.execPath, [DRIVER, root], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('exit', (code) => (code === 0 ? done(JSON.parse(out)) : fail(new Error(`driver exit ${code}: ${err}`))));
+  });
+}
+
+async function dispatchWorld({ projects, accountIds, holdMs, maxLiveProjects }) {
+  const helpers = await import('./helpers.mjs');
+  const home = helpers.makeHome();
+  const trace = join(home, 'trace.log');
+  for (const id of accountIds) helpers.addFake(id, { mode: 'ok', write: { 'src/a.txt': '1' }, holdMs, trace });
+  const repos = Array.from({ length: projects }, () => helpers.makeRepo({ defaults: { maxLiveProjects } }).dir);
+  const env = { ...process.env };
+  const results = await Promise.all(repos.map((root) => drive(root, env)));
+  const events = readFileSync(trace, 'utf8').split('\n').filter(Boolean).map((l) => l.split(' '));
+  return { repos, results, events, helpers };
+}
+
+function overlaps(events) {
+  const byDir = new Map();
+  let live = 0;
+  let max = 0;
+  let sameAccountOverlap = false;
+  for (const [kind, dir, at] of events.sort((a, b) => Number(a[2]) - Number(b[2]) || (a[0] === 'end' ? -1 : 1))) {
+    const open = byDir.get(dir) ?? 0;
+    if (kind === 'start') { byDir.set(dir, open + 1); live++; if (open + 1 > 1) sameAccountOverlap = true; } else { byDir.set(dir, open - 1); live--; }
+    max = Math.max(max, live);
+    void at;
+  }
+  return { max, sameAccountOverlap };
+}
+
+test('test 8: 8 dispatches over 3 accounts run at most 3 at a time and never share an account', { timeout: 300000 }, async () => {
+  const world = await dispatchWorld({ projects: 8, accountIds: ['g1', 'g2', 'g3'], holdMs: 500, maxLiveProjects: 8 });
+  assert.equal(world.results.length, 8);
+  for (const r of world.results) assert.notEqual(r.status, 'NEEDS_HUMAN', JSON.stringify(r));
+  assert.equal(world.events.filter((e) => e[0] === 'start').length, 8, 'every dispatch ran a worker exactly once');
+  const { max, sameAccountOverlap } = overlaps(world.events);
+  assert.ok(max <= 3, `at most 3 workers at once, saw ${max}`);
+  assert.ok(max >= 2, 'workers did overlap, so the test exercised contention');
+  assert.equal(sameAccountOverlap, false, 'no account ever ran two workers at once');
+});
+
+test('test 9: two projects at once get different accounts and independent git indexes', { timeout: 300000 }, async () => {
+  const { spawnSync } = await import('node:child_process');
+  const helpers = await import('./helpers.mjs');
+  const index = (dir) => spawnSync('git', ['ls-files', '-s'], { cwd: dir, encoding: 'utf8' }).stdout;
+  const world = await (async () => {
+    const home = helpers.makeHome();
+    const trace = join(home, 'trace.log');
+    for (const id of ['g1', 'g2']) helpers.addFake(id, { mode: 'ok', write: { 'src/a.txt': '1' }, holdMs: 600, trace });
+    const repos = [helpers.makeRepo().dir, helpers.makeRepo().dir];
+    const before = repos.map(index);
+    const results = await Promise.all(repos.map((root) => drive(root, { ...process.env })));
+    return { repos, before, results, trace };
+  })();
+  assert.notEqual(world.results[0].account, world.results[1].account);
+  assert.deepEqual(world.results.map((r) => r.busy), [0, 0], 'neither had to wait: two accounts, two projects');
+  assert.deepEqual(world.repos.map(index), world.before, 'indexes untouched by the other project');
+});

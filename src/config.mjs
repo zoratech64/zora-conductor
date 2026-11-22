@@ -14,6 +14,8 @@ export const DEFAULTS = {
     allowed: [],
     minutes: 30,
     maxAttempts: 8,
+    /** Projects that may hold account leases at the same time on this machine. */
+    maxLiveProjects: 2,
     cooldownMinutes: 60,
     /** No cooldown, however the reset time was learned, lasts longer than this. */
     maxCooldownMinutes: 1440,
@@ -78,6 +80,7 @@ export function loadConfig(root) {
   validateEcc(config.ecc, root);
   for (const key of ['minutes', 'cooldownMinutes', 'flakyCooldownMinutes', 'verifyTimeoutMinutes']) parseMinutes(config.defaults[key], `defaults.${key}`);
   parseCount(config.defaults.maxAttempts, 'defaults.maxAttempts', { max: 50 });
+  parseCount(config.defaults.maxLiveProjects, 'defaults.maxLiveProjects', { min: 1, max: 16 });
   parseCount(config.defaults.maxCooldownMinutes, 'defaults.maxCooldownMinutes', { min: 1, max: 10080 });
   if (!ON_LIMIT.includes(config.defaults.onLimit)) throw new Error(`defaults.onLimit must be ${ON_LIMIT.join(' or ')}`);
   if (!PERMISSIONS.includes(config.worker.permissions)) throw new Error(`worker.permissions must be ${PERMISSIONS.join(', ')}`);

@@ -166,6 +166,7 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
   const selectOne = db.prepare('SELECT * FROM leases WHERE key = ?');
   const listAll = db.prepare('SELECT * FROM leases ORDER BY acquired_at, key');
   const remove = db.prepare('DELETE FROM leases WHERE key = ? AND run_id = ?');
+  const setWorker = db.prepare('UPDATE leases SET worker_pid = ?, worker_pgid = ?, worker_start = ? WHERE key = ? AND run_id = ?');
   const beat = db.prepare('UPDATE leases SET heartbeat_at = ? WHERE key = ? AND run_id = ?');
   const insert = db.prepare(`INSERT INTO leases (key, kind, run_id, project_key, state_root, owner_pid, owner_start, owner_boot,
     worker_pid, worker_pgid, worker_start, profile_path, profile_dev, profile_ino, zc_version, acquired_at, heartbeat_at)
@@ -195,6 +196,9 @@ export function openRegistry({ dir, fsType = networkFsType, now = () => Date.now
     /** Only the run that holds the lease can release it. */
     releaseLease: (key, runId) => withTx(() =>
       Number(remove.run(key, runId).changes) > 0),
+    /** Record the worker process once it exists (pid, process group, start time). */
+    updateWorker: (key, runId, { pid, pgid, start }) => withTx(() =>
+      Number(setWorker.run(pid ?? null, pgid ?? null, start ?? null, key, runId).changes) > 0),
     heartbeat: (key, runId, at = now()) => withTx(() =>
       Number(beat.run(at, key, runId).changes) > 0)
   };
