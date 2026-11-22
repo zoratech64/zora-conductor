@@ -55,7 +55,7 @@ test('a running dispatch records RUNNING with owner and worker identity, and the
   addFake('g1', { mode: 'ok', write: { 'src/a.txt': '1' }, holdMs: 1500, trace });
   const child = spawn(process.execPath, [DRIVER, dir], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = new Promise((done) => child.on('exit', done));
-  const live = await waitFor(() => { const r = readRecord(dir); return r?.status === 'RUNNING' && r.worker ? r : null; }, 'a RUNNING record with a worker');
+  const live = await waitFor(() => { const r = readRecord(dir); return r?.status === 'RUNNING' && r.worker?.pid ? r : null; }, 'a RUNNING record with a worker');
   assert.equal(live.owner.pid, child.pid);
   assert.equal(live.account, 'g1');
   assert.equal(typeof live.worker.pid, 'number');
@@ -73,7 +73,7 @@ test('a dispatcher killed with SIGKILL leaves RUNNING: ORPHAN while its worker l
   addFake('g1', { mode: 'slow', trace });
   const child = spawn(process.execPath, [DRIVER, dir], { env: process.env, stdio: 'ignore' });
   const exited = new Promise((done) => child.on('exit', done));
-  const live = await waitFor(() => { const r = readRecord(dir); return r?.status === 'RUNNING' && r.worker ? r : null; }, 'the worker to be recorded');
+  const live = await waitFor(() => { const r = readRecord(dir); return r?.status === 'RUNNING' && r.worker?.pid ? r : null; }, 'the worker to be recorded');
   child.kill('SIGKILL');
   await exited;
   const shown = listRuns(dir, 1)[0];
