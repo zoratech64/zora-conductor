@@ -23,6 +23,7 @@ function ownerState(lease, d) {
 }
 
 /** A corrupt row must not abort every dispatch: a throw is an unproven answer. */
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const RANK = { found: 2, unknown: 1, none: 0 };
 const worst = (verdicts) => verdicts.reduce((a, b) => (RANK[b] ?? 1) > (RANK[a] ?? 1) ? b : a, 'none');
 const configuredDirs = () => { try { return listAccounts().map((a) => a.profileDir).filter(Boolean); } catch { return []; } };
@@ -32,18 +33,29 @@ const attempt = (fn) => { try { return fn(); } catch { return 'unknown'; } };
 
 /** The verdict on one lease: { verdict: live|stale|orphan|unknown, reason }. */
 export function proveLease(lease, deps = {}) {
-  const d = { platform: process.platform, isolation: isolationMode(), profileDirs: configuredDirs, isAlive, groupAlive, scan: scanProfileUsers, ...deps };
+  const d = { platform: process.platform, isolation: isolationMode(), profileDirs: configuredDirs, retryDelays: [50, 150, 400], isAlive, groupAlive, scan: scanProfileUsers, ...deps };
   if (d.platform !== 'linux') return { verdict: 'unknown', reason: 'no process identity on this platform, so nothing is proven' };
   if (d.isolation !== 'dbus') return { verdict: 'unknown', reason: 'private profile isolation is off, so the profile scan cannot prove a worker gone' };
   const owner = ownerState(lease, d);
   if (owner !== false) return evaluateStale({ ownerAlive: owner });
-  const group = lease.workerPgid ? attempt(() => d.groupAlive(lease.workerPgid).verdict) : 'none';
   const after = lease.workerStart != null ? lease.workerStart : lease.ownerStart;
   const bound = after != null && lease.ownerBoot ? { startedAfter: { startTicks: after, bootId: lease.ownerBoot } } : {};
-  // A worker is launched with the account's profileDir as configured (maybe a symlink); the lease holds its realpath.
-  const scan = lease.profilePath
-    ? worst([lease.profilePath, ...linkedDirs(lease.profilePath, d.profileDirs())].map((dir) => attempt(() => d.scan(dir, bound).verdict)))
-    : 'none';
+  const probe = () => {
+    const group = lease.workerPgid ? attempt(() => d.groupAlive(lease.workerPgid).verdict) : 'none';
+    // A worker is launched with the account's profileDir as configured (maybe a symlink); the lease holds its realpath.
+    const scan = lease.profilePath
+      ? worst([lease.profilePath, ...linkedDirs(lease.profilePath, d.profileDirs())].map((dir) => attempt(() => d.scan(dir, bound).verdict)))
+      : 'none';
+    return { group, scan };
+  };
+  // A process that is starting or exiting can be unreadable for a moment: look again a few times before giving up.
+  let seen = probe();
+  for (const delay of d.retryDelays) {
+    if (seen.group !== 'unknown' && seen.scan !== 'unknown') break;
+    pause(delay);
+    seen = probe();
+  }
+  const { group, scan } = seen;
   const verdict = evaluateStale({ ownerAlive: false, workerScan: scan, groupAlive: group });
   return scan === 'unknown' || group === 'unknown' ? { ...verdict, reason: `${verdict.reason}: a process entry could not be read` } : verdict;
 }

@@ -3,6 +3,11 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Consecutive full test runs for the stability job
+        default: '20'
 
 # Read-only: CI only checks out the code and runs the project's own scripts.
 permissions:
@@ -53,3 +58,27 @@ jobs:
           fi
           echo "Permission tests ran (none skipped)."
           grep -E '^(# |ℹ )skipped [0-9]+$' "$out"
+      # Reported targets (p99 lease latency, two-project speedup) with generous failure thresholds.
+      - name: Linux - concurrency measurements
+        if: runner.os == 'Linux' && matrix.node == 22
+        run: node scripts/measure-concurrency.mjs 200 1500 --check
+
+  # Run by hand (Actions > ci > Run workflow): the full suite many times in a row on Linux.
+  stability:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: git config --global init.defaultBranch main
+      - name: Consecutive full runs
+        shell: bash
+        env:
+          RUNS: ${{ inputs.runs }}
+        run: |
+          for i in $(seq 1 "$RUNS"); do
+            echo "run $i"
+            npm test > "$RUNNER_TEMP/run-$i.log" 2>&1 || { tail -60 "$RUNNER_TEMP/run-$i.log"; exit 1; }
+          done

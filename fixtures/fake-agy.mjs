@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Test double for the Antigravity CLI. Behaviour comes from <gemini_dir>/scenario.json so each
 // fake account can act differently:
-//   { mode: ok|quota|auth|license|location|server|capacity|network|slow|permission, write: {path: content},
+//   { mode: ok|quota|auth|license|location|server|capacity|network|crash|slow|permission, write: {path: content},
 //     partial: true (write files, then fail), failTimes: N (misbehave N times, then succeed),
 //     commit: true (also git commit, to simulate a worker moving HEAD), signedOut: true (/usage fails),
 //     chmod: {path: octal-mode} (change permissions, e.g. make a folder unreadable) }
@@ -72,6 +72,7 @@ switch (mode) {
   case 'location': failResult('User location is not supported for the API use.'); break;
   case 'server': failResult('Internal error encountered'); break;
   case 'capacity': failResult('API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server'); break;
+  case 'crash': process.exit(3); break; // dies mid-task with no message at all
   case 'network': failResult('request failed: fetch failed (getaddrinfo ENOTFOUND generativelanguage.googleapis.com)'); break;
   case 'auth': console.error('Authentication required. Please sign in.'); process.exit(1); break;
   case 'slow': await new Promise((resolve) => setTimeout(resolve, 60_000)); break;
