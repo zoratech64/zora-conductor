@@ -34,7 +34,8 @@ export function createRecorder({ runDir, result }) {
   return {
     start: write,
     update: (extra = {}) => soft(() => Object.assign(live, extra)),
-    setWorker: (next) => soft(() => { worker = next; })
+    setWorker: (next) => soft(() => { worker = next; }),
+    identity: () => ({ owner, worker }) // kept in a final record whose worker was not proven gone, so `zc recover` can prove it later
   };
 }
 

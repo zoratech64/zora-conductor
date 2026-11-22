@@ -12,6 +12,7 @@ import { openRegistry } from './registry.mjs';
 import { parseArgs } from './args.mjs';
 import { detectStack, loadConfig } from './config.mjs';
 import { parseMinutes } from './limits.mjs';
+import { recoverRun } from './recover.mjs';
 import { EXIT, acceptRun, ackRun, dispatch, formatResult, getRun, listRuns, rejectRun } from './dispatch.mjs';
 import * as G from './gitx.mjs';
 import { configPath, stateRoot } from './paths.mjs';
@@ -30,6 +31,8 @@ Project (run inside the git repo):
   zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result (task declares cause:)
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
   zc accept [<runId>]                     stage only a verified run's files (never commits)
+  zc recover <runId> [--yes]              record an interrupted run's tree as its result (never touches files; proves the worker is gone)
+  zc recover <runId> --release <account> --confirm "<text>" --yes   by-hand override where the worker cannot be proven gone
   zc ack [runId]                          record that you checked the git metadata a run could not repair
   zc runs                                 recent runs
   zc status                               accounts, cooldowns, latest run
@@ -417,6 +420,17 @@ async function runCommand(argv) {
         const opts = parseArgs(rest);
         const out = await deferSignals(() => ackRun({ root: projectRoot(opts), runId: opts._[0] }));
         console.log(`zc: acknowledged git metadata of run ${out.runId}`);
+        return 0;
+      }
+      case 'recover': {
+        const opts = parseArgs(rest, { bool: ['yes'] });
+        if (!opts._[0]) throw new Error('usage: zc recover <runId> [--yes] (see `zc runs`)');
+        const out = await deferSignals(() => recoverRun({ root: projectRoot(opts), runId: opts._[0], yes: Boolean(opts.yes), release: opts.release ?? null, confirm: opts.confirm ?? null }));
+        console.log(`zc: run ${out.runId}: worker ${out.proof.verdict === 'human' ? (out.recovered ? 'released by hand' : 'would be released by hand') : 'proven gone'}. The working tree holds ${out.paths.length} changed path(s):`);
+        for (const p of out.paths) console.log(`  ${p.replace(/[\x00-\x1f\x7f-\x9f]/g, '?')}`); // a worker chose these names: no control codes
+        console.log(out.recovered
+          ? `zc: recorded as RECOVERED (no file was touched). Review the paths, then \`zc reject ${out.runId}\` to discard them. \`zc accept\` will not take this run.`
+          : `zc: nothing changed yet. Check that these paths are the worker's, then re-run with --yes.`);
         return 0;
       }
       case 'accept': {

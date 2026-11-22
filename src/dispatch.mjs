@@ -377,6 +377,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           return finish(stopped ? 'INTERRUPTED' : 'NEEDS_HUMAN', stopped ? EXIT.INTERRUPTED : EXIT.NEEDS_HUMAN, {
             account: account.id,
             ...(stopped ? { signal: guard.signal, orphan: true } : {}),
+            ...recorder.identity(),
             nextAction: `the worker's processes could not be proven gone (group ${proof.group}, profile scan ${proof.scan}${proof.pids?.length ? `, pids ${proof.pids.join(' ')}` : ''}). The account stays reserved (lease ${lease.key}) and so does this project (lease project:${projectKey(root)}); no git command was run. Check for stray agy processes, then release it by hand.`
           }, false);
         }
