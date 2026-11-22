@@ -4,11 +4,15 @@
  *   location Google refuses where the call comes from -> stop; rotating accounts cannot fix it
  *   auth     sign-in expired -> account needs `zc account login`
  *   quota    rate/usage limit -> cooldown, switch to the next account
+ *   capacity the model has no free capacity (503 UNAVAILABLE) -> wait and retry; the account is fine
+ *   network  this machine cannot reach the service -> wait and retry; the account is fine
  *   server   Google-side 5xx -> one unchanged rerun, then treat the account as flaky
  */
 const LICENSE = /SUBSCRIPTION_REQUIRED|do not have a valid license of this product|#3501/i;
 const LOCATION = /User location is not supported|Account ineligible|not eligible for Antigravity|region.?restrict|unsupported (?:region|location)/i;
 const AUTH = /authentication required|not authenticated|unauthenticated|please (?:sign|log) ?in|invalid_grant|token (?:has )?(?:expired|been revoked)|re-?authenticate/i;
+const CAPACITY = /No capacity available for model/i;
+const NETWORK = /\bENOTFOUND\b|\bEAI_AGAIN\b|\bECONNRESET\b|\bETIMEDOUT\b|fetch failed/i;
 const QUOTA = /quota|rate.?limit|resource.?exhaust|usage.?limit|too many requests|\b429\b/i;
 const SERVER = /Internal error encountered|HTTP 500|\b50[0-4]\b[^\n]*(?:error|unavailable|gateway)|overloaded|\bUNAVAILABLE\b/i;
 
@@ -17,7 +21,9 @@ export function classify(text) {
   if (LICENSE.test(text)) return 'license';
   if (LOCATION.test(text)) return 'location';
   if (AUTH.test(text)) return 'auth';
+  if (CAPACITY.test(text)) return 'capacity';
   if (QUOTA.test(text)) return 'quota';
+  if (NETWORK.test(text)) return 'network';
   if (SERVER.test(text)) return 'server';
   return null;
 }

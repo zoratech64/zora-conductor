@@ -20,6 +20,9 @@ export const DEFAULTS = {
     /** No cooldown, however the reset time was learned, lasts longer than this. */
     maxCooldownMinutes: 1440,
     flakyCooldownMinutes: 10,
+    /** Waits (seconds) before retrying after model capacity or network failures; at most two waits per run, neither cools an account down. */
+    capacityWaitSeconds: [60, 180],
+    networkWaitSeconds: [30, 120],
     verifyTimeoutMinutes: 15,
     /** reset: roll a failed worker's partial edits back (patch saved first). continue: next account picks up. */
     onLimit: 'reset'
@@ -79,6 +82,12 @@ export function loadConfig(root) {
   config.verify = normalizeCommands(config.verify, 'verify');
   validateEcc(config.ecc, root);
   for (const key of ['minutes', 'cooldownMinutes', 'flakyCooldownMinutes', 'verifyTimeoutMinutes']) parseMinutes(config.defaults[key], `defaults.${key}`);
+  for (const key of ['capacityWaitSeconds', 'networkWaitSeconds']) {
+    const list = config.defaults[key];
+    if (!Array.isArray(list) || !list.length || list.length > 2 || !list.every((v) => Number.isFinite(v) && v >= 0 && v <= 3600)) {
+      throw new Error(`defaults.${key} must be one or two numbers of seconds (0 to 3600)`);
+    }
+  }
   parseCount(config.defaults.maxAttempts, 'defaults.maxAttempts', { max: 50 });
   parseCount(config.defaults.maxLiveProjects, 'defaults.maxLiveProjects', { min: 1, max: 16 });
   parseCount(config.defaults.maxCooldownMinutes, 'defaults.maxCooldownMinutes', { min: 1, max: 10080 });

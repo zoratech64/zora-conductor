@@ -53,7 +53,7 @@ Accounts (machine-global):
 Other:
   zc --version                            print the zora-conductor version
 
-Dispatch exit codes: 0 done and verified | 1 failed/rejected/verify failed | 2 no capacity (all cooling) | 3 needs a human
+Dispatch exit codes: 0 done and verified | 1 failed/rejected/verify failed | 2 no capacity (all cooling, model capacity, or network) | 3 needs a human
 Options: --project <dir>  --json  --dry-run  --minutes <n>`;
 
 function projectRoot(opts) {

@@ -6,7 +6,7 @@ import { classify, parseResetHint } from './classify.mjs';
 import { readJson, writeJsonAtomic } from './fsx.mjs';
 import { acquireProjectLease } from './lease-project.mjs';
 import { createRecorder, deriveStatus, identityOf } from './runrecord.mjs';
-import { installSignalGuard } from './signals.mjs';
+import { installSignalGuard, interruptibleSleep } from './signals.mjs';
 import { processIdentity } from './procid.mjs';
 import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
 import { gitLayout } from './gitmeta.mjs';
@@ -285,6 +285,10 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
     const flakyMs = config.defaults.flakyCooldownMinutes * 60_000;
     const maxCooldownMs = config.defaults.maxCooldownMinutes * 60_000;
     const flakyRetried = new Set();
+    const MAX_WAITS = 2; // capacity and network waits together, per run
+    const waited = { capacity: 0, network: 0 };
+    let waits = 0;
+    let freeAttempts = 0; // attempts that ended in a wait do not use up maxAttempts
     let deniedRetried = false;
 
     /** Keep the failed worker's partial work, then roll it back (or hand it on). */
@@ -307,7 +311,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
 
     const settleHealth = (health) => { settleLease(held, health); held = null; }; // health update and release in one transaction
     let held = null; // the account lease of the attempt in progress; null once released or deliberately kept
-    while (result.attempts.length < config.defaults.maxAttempts) {
+    while (result.attempts.length - freeAttempts < config.defaults.maxAttempts) {
       await guard.yield();
       if (guard.interrupted()) {
         return interruptedBefore({ nextAction: 'interrupted before the next worker started; this run changed nothing since its last attempt.' });
@@ -623,6 +627,28 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             attempt.cooldownSource = hint ? 'hint' : 'default';
             settleHealth(() => accounts.cooldown(account.id, until, 'quota'));
             attempt.cooldownUntil = new Date(until).toISOString();
+            continue;
+          }
+          case 'capacity':
+          case 'network': {
+            const capacity = kind === 'capacity';
+            if (waits >= MAX_WAITS) {
+              return finish(capacity ? 'NO_CAPACITY' : 'NETWORK', EXIT.NO_CAPACITY, {
+                account: account.id, reason: capacity ? 'model-capacity' : 'network',
+                nextAction: capacity
+                  ? 'the model had no capacity after two waits. No account was cooled down or changed. Dispatch again later.'
+                  : 'this machine could not reach the service after two waits. No account was changed. Check the network, then dispatch again.'
+              });
+            }
+            const list = capacity ? config.defaults.capacityWaitSeconds : config.defaults.networkWaitSeconds;
+            const seconds = list[Math.min(waited[kind], list.length - 1)];
+            waited[kind]++; waits++; freeAttempts++;
+            attempt.waitSeconds = seconds;
+            settleHealth(); // the account is free during the wait; no cooldown, no rotation; only the project lease is held
+            log(`${kind} failure: waiting ${seconds} s before the next attempt`);
+            if (!(await interruptibleSleep(seconds * 1000))) {
+              return interruptedBefore({ nextAction: `interrupted while waiting after a ${kind} failure; the tree was left as after the last attempt.` });
+            }
             continue;
           }
           case 'auth':
