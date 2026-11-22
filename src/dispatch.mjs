@@ -5,6 +5,7 @@ import { runAgy } from './agy.mjs';
 import { classify, parseResetHint } from './classify.mjs';
 import { readJson, writeJsonAtomic } from './fsx.mjs';
 import { acquireProjectLease } from './lease-project.mjs';
+import { createRecorder, deriveStatus, identityOf } from './runrecord.mjs';
 import { installSignalGuard } from './signals.mjs';
 import { processIdentity } from './procid.mjs';
 import { proveWorkerGone, recordWorker, reserve, settleLease } from './reserve.mjs';
@@ -33,13 +34,17 @@ const CONTINUE_NOTE =
 const newRunId = () =>
   `${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
 
-export function listRuns(root, limit = 10) {
+function readRuns(root, limit) {
   let names = [];
   try { names = readdirSync(runsDir(root)); } catch { return []; }
   return names.sort().reverse().slice(0, limit)
-    .map((name) => readJson(join(runsDir(root), name, 'result.json'), null))
-    .filter(Boolean);
+    .map((name) => ({ name, record: readJson(join(runsDir(root), name, 'result.json'), null) }))
+    .filter(({ name, record }) => record && record.runId === name) // a record that names another run is not trusted
+    .map(({ record }) => record);
 }
+
+/** Newest first, with a stale RUNNING shown as ORPHAN or INTERRUPTED. */
+export const listRuns = (root, limit = 10) => readRuns(root, limit).map(deriveStatus);
 
 /** Same repository layout: git directories, pointer files and directory identity all equal. */
 const sameLayout = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -49,9 +54,15 @@ const sameLayout = (a, b) => JSON.stringify(a) === JSON.stringify(b);
  * carry the flag, so they are skipped, however many pile up: every run is scanned.
  */
 const pendingMetaRun = (root, exceptId = null) =>
-  listRuns(root, Infinity).find((r) => r.gitMetaUnrestored && !r.gitMetaAcknowledged && r.runId !== exceptId) ?? null;
+  readRuns(root, Infinity).find((r) => r.gitMetaUnrestored && !r.gitMetaAcknowledged && r.runId !== exceptId) ?? null;
 
-export const getRun = (root, id) => (/^[\w-]+$/.test(String(id)) ? readJson(join(runsDir(root), id, 'result.json'), null) : null);
+export const getRun = (root, id) => {
+  if (!/^[\w-]+$/.test(String(id))) return null;
+  const record = readJson(join(runsDir(root), id, 'result.json'), null);
+  return record && record.runId === id ? record : null;
+};
+/** The run as `zc runs` shows it (stale RUNNING derived), for commands that judge its status. */
+const getRunShown = (root, id) => { const run = getRun(root, id); return run ? deriveStatus(run) : null; };
 
 /**
  * Combine project and task verification commands. Project commands always run first in order;
@@ -173,8 +184,10 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
   }
 
   const guard = installSignalGuard({ log: (message) => console.error(`zc: ${message}`) });
+  const recorder = createRecorder({ runDir, result });
   const interruptedBefore = (extra = {}) => finish('INTERRUPTED', EXIT.INTERRUPTED, { signal: guard.signal, ...extra });
   try {
+    recorder.start(); // from now on a crash leaves RUNNING with the owner's identity, not nothing
     const last = pendingMetaRun(root, id);
     metaBlocked = Boolean(last);
     if (last) {
@@ -308,6 +321,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       if (!got.ok) return finish(...reserveOutcome(got));
       const { account } = got;
       held = got.lease;
+      recorder.update({ account: account.id });
 
       try {
         const n = result.attempts.length + 1;
@@ -334,6 +348,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
         }
         const started = Date.now();
         let spawned = null;
+        recorder.setWorker({ starting: true }); // a crash from here on must not read as INTERRUPTED
         const r = await runAgy({
           account, prompt, cwd: root, timeoutSec,
           permissions: config.worker.permissions,
@@ -343,6 +358,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
             workerUnproven = true;
             spawned = { pgid: child.pid, worker: null };
             try { spawned.worker = processIdentity(child.pid); } catch { /* unreadable: the scan then runs without an age bound */ }
+            recorder.setWorker({ ...identityOf(child.pid), pgid: child.pid }); // record it first: the smallest gap if the owner dies now
             recordWorker(held, child);
           }
         });
@@ -365,6 +381,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
           }, false);
         }
         workerUnproven = false;
+        recorder.setWorker(null);
         attempt.metrics = attemptMetrics(r.parsed, prompt);
         writeFileSync(join(runDir, `attempt-${n}.events.jsonl`), r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : ''));
 
@@ -664,8 +681,11 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
  * Returns { runId, rolledBack, restored[], conflicts[{path, reason}], note? }.
  */
 export function rejectRun({ root, runId, force = false }) {
-  const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
+  const prev = runId ? getRunShown(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to reject (see `zc runs`)');
+  if (prev.status === 'RUNNING' || prev.statusDerived) {
+    throw new Error(`run ${prev.runId} did not finish (recorded ${prev.storedStatus ?? 'RUNNING'}, shown as ${prev.status}): its zc may still be running or died mid-run. Nothing was changed. Check \`zc status\` for leases; recovering an interrupted run is \`zc recover ${prev.runId}\`.`);
+  }
   const release = acquireProjectLease({ root, runId: `reject-${prev.runId}` });
   let pinned = false;
   try {
@@ -732,7 +752,7 @@ export function ackRun({ root, runId }) {
  * Returns { runId, staged, leftAlone }.
  */
 export function acceptRun({ root, runId, config = {} }) {
-  const prev = runId ? getRun(root, runId) : listRuns(root, 1)[0];
+  const prev = runId ? getRunShown(root, runId) : listRuns(root, 1)[0];
   if (!prev) throw new Error('no run to accept (see `zc runs`)');
   const release = acquireProjectLease({ root, runId: `accept-${prev.runId}` });
   try {
