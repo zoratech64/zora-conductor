@@ -83,13 +83,17 @@ function takeFirstFree(registry, attested, base, kept = new Map()) {
 }
 
 /** Choose an attested, ready account and lease its profile in one transaction. */
-export function reserve({ root, runId, maxProjects = 2, exclude = [], now = Date.now(), deps = {} }) {
+export function reserve({ root, runId, maxProjects = 2, exclude = [], only = null, now = Date.now(), deps = {} }) {
   return withAccountsLock((registry) => {
     const legacy = liveDispatchers(stateRoot(), pidAlive, { legacyOnly: true });
     if (legacy.length) return refuse('legacy-dispatcher', { dispatchers: legacy });
     const all = accounts.listAccounts();
     if (!all.length) return refuse('no-accounts');
-    const ready = accounts.candidates({ now, exclude });
+    // `only` pins the dispatch to one account: no fallback to another one, whatever its state.
+    const pinned = only ? all.find((a) => a.id === only) : null;
+    if (only && !pinned) return refuse('unknown-account', { id: only });
+    const ready = accounts.candidates({ now, exclude }).filter((a) => !only || a.id === only);
+    if (only && !ready.length) return refuse('pinned-unavailable', { id: only, status: pinned.status, cooldownUntil: pinned.cooldownUntil || 0, holdReason: pinned.holdReason || '' });
     if (!ready.length) {
       const at = accounts.nextAvailableAt(now);
       return at ? refuse('cooling', { retryAfter: at }) : refuse('not-ready');

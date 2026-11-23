@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import './helpers.mjs';
 import * as accounts from '../src/accounts.mjs';
-import { ATTEST_PHRASE, attestationText, normalizeLabel, requireAttestation } from '../src/attest.mjs';
+import { normalizeLabel, requireAttestation } from '../src/attest.mjs';
 
 const BIN = resolve(import.meta.dirname, '..', 'bin', 'zc.mjs');
 
@@ -29,34 +29,18 @@ test('normalizeLabel: trims, case-folds, collapses spaces; rejects empty, long a
   for (const sneaky of ['al\u200bice', 'ali\u202ece']) assert.throws(() => normalizeLabel(sneaky), /label/, JSON.stringify(sneaky));
 });
 
-test('attestation text says plainly that ZC cannot verify the claim', () => {
-  const text = attestationText('g1', 'Alpha');
-  assert.match(text, /cannot be verified/);
-  assert.match(text, /one-google-account-per-profile/);
-  assert.match(text, /quota/);
+test('requireAttestation: needs a valid label, no confirmation, trims it', () => {
+  assert.throws(() => requireAttestation('g1', {}), /--label/);
+  assert.throws(() => requireAttestation('g1', { label: '  ' }), /label/);
+  const id = requireAttestation('g1', { label: ' A@b.c ' });
+  assert.equal(id.label, 'A@b.c');
+  assert.equal(id.method, 'manual');
 });
 
-test('requireAttestation: flag needs a label; flag with label passes; no flag and no tty fails', async () => {
-  const noTty = { isTTY: false, ask: async () => { throw new Error('must not prompt'); } };
-  await assert.rejects(requireAttestation('g1', { 'confirm-unique-google-account': true }, noTty), /--label/);
-  await assert.rejects(requireAttestation('g1', { label: 'a' }, noTty), /--confirm-unique-google-account/);
-  assert.equal((await requireAttestation('g1', { label: ' A ', 'confirm-unique-google-account': true }, noTty)).label, 'A');
-});
-
-test('requireAttestation: interactive needs the exact typed phrase', async () => {
-  const typed = (answer) => ({ isTTY: true, print: () => {}, ask: async () => answer });
-  await assert.rejects(requireAttestation('g1', { label: 'a' }, typed('yes')), /phrase/);
-  await assert.rejects(requireAttestation('g1', { label: 'a' }, typed('ONE-GOOGLE-ACCOUNT-PER-PROFILE')), /phrase/);
-  const ok = await requireAttestation('g1', { label: 'a' }, typed(ATTEST_PHRASE));
-  assert.equal(ok.label, 'a');
-  await assert.rejects(requireAttestation('g1', {}, typed(ATTEST_PHRASE)), /--label/);
-});
-
-test('zc account add without --label or confirmation fails and writes nothing', () => {
+test('zc account add without --label fails and writes nothing', () => {
   const home = freshHome();
   const cases = [
     ['account', 'add', 'g1', '--no-login'],
-    ['account', 'add', 'g1', '--no-login', '--label', 'alpha'],
     ['account', 'add', 'g1', '--no-login', '--confirm-unique-google-account']
   ];
   for (const args of cases) {
@@ -65,6 +49,15 @@ test('zc account add without --label or confirmation fails and writes nothing', 
     assert.equal(existsSync(join(home, 'accounts.json')), false, args.join(' '));
   }
   assert.deepEqual(readdirSync(home), []);
+});
+
+test('zc account add with only --label needs no confirmation; a duplicate label is refused', () => {
+  const home = freshHome();
+  assert.equal(zc(home, ['account', 'add', 'g1', '--no-login', '--label', 'A@b.c']).status, 0);
+  const dup = zc(home, ['account', 'add', 'g2', '--no-login', '--label', 'a@B.c']);
+  assert.notEqual(dup.status, 0);
+  assert.match(dup.stderr, /already attested on account "g1"/);
+  assert.equal(JSON.parse(readFileSync(join(home, 'accounts.json'), 'utf8')).accounts.g2, undefined);
 });
 
 test('zc account add with label and flag attests, and list shows the label', () => {
@@ -79,6 +72,37 @@ test('zc account add with label and flag attests, and list shows the label', () 
   assert.match(list.stdout, /g1/);
   assert.match(list.stdout, /attested: Alpha/);
   assert.equal(statSync(join(home, 'accounts.json')).isFile(), true);
+});
+
+test('zc account login --label attests after a successful sign-in; no label leaves it unattested', () => {
+  const home = freshHome();
+  const env = { ...process.env, ZC_HOME: home, ZC_ISOLATION: 'none', ZC_AGY: resolve(import.meta.dirname, '..', 'fixtures', 'fake-agy.mjs') };
+  const run = (args) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: 'utf8', input: '' });
+  run(['account', 'add', 'g1', '--no-login', '--label', 'old@x.y', '--confirm-unique-google-account']);
+  const file = join(home, 'accounts.json');
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  saved.accounts.g1.identity = null; // legacy, unattested
+  writeFileSync(file, JSON.stringify(saved));
+  const plain = run(['account', 'login', 'g1']);
+  assert.match(plain.stdout, /g1 is not attested/);
+  const out = run(['account', 'login', 'g1', '--label', 'new@x.y', '--confirm-unique-google-account']);
+  assert.match(out.stdout, /attested as "new@x\.y"/, out.stderr);
+  assert.match(run(['account', 'list']).stdout, /attested: new@x\.y/);
+});
+
+test('list shows 5h and weekly quota with reset times', () => {
+  const home = freshHome();
+  zc(home, ['account', 'add', 'g1', '--no-login', '--label', 'a@b.c', '--confirm-unique-google-account']);
+  const file = join(home, 'accounts.json');
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  saved.accounts.g1.usage = [
+    { models: 'Gemini', window: 'five hour', remainingPercent: 42, resetsAt: '2026-11-08T17:00:00Z' },
+    { models: 'Gemini', window: 'weekly', remainingPercent: 90.5, resetsAt: '2026-11-15T00:00:00Z' }
+  ];
+  writeFileSync(file, JSON.stringify(saved));
+  const out = zc(home, ['account', 'list']).stdout;
+  assert.match(out, /5h 42% \(resets 2026-11-08 17:00Z\)\s+weekly 90\.5% \(resets 2026-11-15 00:00Z\)/);
+  assert.match(out, /attested: a@b\.c/);
 });
 
 test('duplicate normalized label is refused on add and on attest; own label can be re-attested', () => {
@@ -97,13 +121,12 @@ test('duplicate normalized label is refused on add and on attest; own label can 
   assert.equal(zc(home, ['account', 'attest', 'g2', '--label', 'Gamma', ...flags]).status, 0);
 });
 
-test('zc account attest: unknown id, missing label and wrong typed phrase all fail without changes', () => {
+test('zc account attest: unknown id, and missing label fail without changes', () => {
   const home = freshHome();
   assert.equal(zc(home, ['account', 'add', 'g1', '--no-login', '--label', 'a', '--confirm-unique-google-account']).status, 0);
   const before = readFileSync(join(home, 'accounts.json'), 'utf8');
   assert.notEqual(zc(home, ['account', 'attest', 'nope', '--label', 'x', '--confirm-unique-google-account']).status, 0);
   assert.notEqual(zc(home, ['account', 'attest', 'g1', '--confirm-unique-google-account']).status, 0);
-  assert.notEqual(zc(home, ['account', 'attest', 'g1', '--label', 'b']).status, 0);
   assert.equal(readFileSync(join(home, 'accounts.json'), 'utf8'), before);
 });
 
@@ -146,4 +169,19 @@ test('agy probe: only help/changelog against a temp HOME exposes no identity com
   for (const sub of ['whoami', 'account', 'auth', 'status']) {
     assert.doesNotMatch(text, new RegExp(`^\\s+${sub}\\b`, 'm'), `agy now has a "${sub}" command: record it as a B2 follow-up`);
   }
+});
+
+test('zc account remove moves the profile (and its saved login) aside; re-adding starts clean', () => {
+  const home = freshHome();
+  zc(home, ['account', 'add', 'g1', '--no-login', '--label', 'a@b.c']);
+  const profile = JSON.parse(readFileSync(join(home, 'accounts.json'), 'utf8')).accounts.g1.profileDir;
+  mkdirSync(profile, { recursive: true });
+  writeFileSync(join(profile, 'marker'), 'login');
+  const r = zc(home, ['account', 'remove', 'g1']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(profile), false);
+  const moved = readdirSync(join(home, 'removed-profiles'));
+  assert.equal(moved.length, 1);
+  assert.equal(readFileSync(join(home, 'removed-profiles', moved[0], 'marker'), 'utf8'), 'login');
+  assert.equal(zc(home, ['account', 'add', 'g1', '--no-login', '--label', 'a@b.c']).status, 0);
 });

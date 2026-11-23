@@ -126,6 +126,16 @@ function reserveOutcome(got) {
       return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'profile-in-use', nextAction: `account ${got.account} has no lease but processes already use its profile (pids ${got.pids.join(' ')}), for example an older zc worker or a manual agy. Stop them, then dispatch again.` }];
     case 'stale-lease':
       return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'stale-lease', nextAction: `account ${got.account} is still leased by run ${got.holder.runId} whose dispatcher (pid ${got.holder.ownerPid}) is gone. It was not taken over; check for stray agy processes and release it by hand.` }];
+    case 'unknown-account':
+      return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { reason: 'unknown-account', nextAction: `--account ${got.id}: no such account. See \`zc account list\`.` }];
+    case 'pinned-unavailable': {
+      const cooling = got.cooldownUntil > Date.now();
+      const why = cooling ? `cooling down until ${new Date(got.cooldownUntil).toISOString()}` : `status ${got.status}${got.holdReason ? ` (${got.holdReason})` : ''}`;
+      return ['NO_CAPACITY', EXIT.NO_CAPACITY, {
+        reason: 'pinned-unavailable', ...(cooling ? { retryAfter: new Date(got.cooldownUntil).toISOString() } : {}),
+        nextAction: `--account ${got.id} is not available: ${why}. No other account was tried; wait, fix it, or dispatch without --account.`
+      }];
+    }
     case 'no-accounts':
       return ['NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: 'no worker accounts yet. Run `zc account add <id>` for each Gemini account.' }];
     default:
@@ -139,7 +149,7 @@ function reserveOutcome(got) {
  * `repairOf` is given). Worker output is never trusted: scope is checked from
  * git itself and verification is run here, not reported by the worker.
  */
-export async function dispatch({ root, task, config, repairOf = null, dryRun = false, log = () => {} }) {
+export async function dispatch({ root, task, config, repairOf = null, dryRun = false, account: onlyAccount = null, log = () => {} }) {
   const { allowed, verify: verifyCmds, prompt: dryPrompt, eccRules } = taskPrompt({
     root, task, config, resumeNote: repairOf ? REPAIR_NOTE : ''
   });
@@ -353,7 +363,7 @@ export async function dispatch({ root, task, config, repairOf = null, dryRun = f
       }
       let got;
       try {
-        got = reserve({ root, runId: id, maxProjects: config.defaults.maxLiveProjects });
+        got = reserve({ root, runId: id, maxProjects: config.defaults.maxLiveProjects, only: onlyAccount });
       } catch (error) {
         return finish('NEEDS_HUMAN', EXIT.NEEDS_HUMAN, { nextAction: `no account could be reserved safely: ${error.message}` });
       }

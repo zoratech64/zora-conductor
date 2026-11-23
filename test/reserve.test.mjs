@@ -315,3 +315,37 @@ test('reserve: a process that uses a profile without holding a lease blocks it (
   }
   assert.equal(reserve({ root: mkTmp('p-'), runId: 'r2' }).ok, true, 'free again once the stray is gone');
 });
+
+test('reserve only: pins one account, never falls back, explains why it is unavailable', () => {
+  makeHome();
+  addFake('g1', {});
+  addFake('g2', {});
+  const pinned = reserve({ root: mkTmp('p-'), runId: 'r1', only: 'g2' });
+  assert.equal(pinned.account.id, 'g2', 'g1 would be first, but g2 was asked for');
+  const busy = reserve({ root: mkTmp('p-'), runId: 'r2', only: 'g2' });
+  assert.equal(busy.ok, false);
+  assert.equal(busy.reason, 'all-reserved', 'g1 is free but must not be used');
+  assert.equal(reserve({ root: mkTmp('p-'), runId: 'r3', only: 'nope' }).reason, 'unknown-account');
+  accounts.updateAccount('g1', { status: 'needs-login' });
+  const down = reserve({ root: mkTmp('p-'), runId: 'r4', only: 'g1' });
+  assert.equal(down.reason, 'pinned-unavailable');
+  assert.equal(down.status, 'needs-login');
+});
+
+test('dispatch --account: runs only the named account; an unavailable one stops the run without trying another', async () => {
+  makeHome();
+  const { dir, config } = makeRepo();
+  const g1 = addFake('g1', { mode: 'ok', write: { 'src/a.txt': '1' } });
+  const g2 = addFake('g2', { mode: 'ok', write: { 'src/a.txt': '1' } });
+  const r = await dispatch({ root: dir, task: scoped(), config, account: 'g2' });
+  assert.notEqual(r.status, 'NEEDS_HUMAN');
+  assert.deepEqual([calls(g1), calls(g2)], [0, 1]);
+  accounts.updateAccount('g2', { status: 'needs-login' });
+  const { dir: clean, config: cleanConfig } = makeRepo(); // the first run left its result uncommitted
+  const down = await dispatch({ root: clean, task: scoped(), config: cleanConfig, account: 'g2' });
+  assert.deepEqual([down.status, down.reason], ['NO_CAPACITY', 'pinned-unavailable']);
+  assert.match(down.nextAction, /--account g2 is not available.*No other account was tried/);
+  assert.equal(calls(g1), 0);
+  const unknown = await dispatch({ root: clean, task: scoped(), config: cleanConfig, account: 'g9' });
+  assert.equal(unknown.status, 'NEEDS_HUMAN');
+});

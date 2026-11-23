@@ -8,6 +8,8 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+## [0.2.0-alpha.4] - 2026-11-23
+
 ### Added
 
 - Machine-wide account and project leases in a SQLite registry (`~/.local/state/zora-conductor-registry`): one worker per Google profile on the machine, one zc operation per project, `defaults.maxLiveProjects` (default 2) projects at once. Released only when the worker is proven gone; stale leases are cleared only on proof (Linux, private isolation, dead dispatcher, nothing using the profile, worker group empty).
@@ -18,6 +20,10 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 - Failure kinds `capacity` and `network` with bounded, interruptible waits (`defaults.capacityWaitSeconds`, `defaults.networkWaitSeconds`; two waits per run, no cooldown, no rotation); end states `NO_CAPACITY` (reason `model-capacity`) and `NETWORK`, exit 2.
 - `defaults.onLimit: "handoff"` with `defaults.maxHandoffs` (default 2): checked partial work goes to the next account through a generated `handoff-n.md`; otherwise `NEEDS_HUMAN`, with the worker's partial work left in the tree (a copy in the run folder). The default stays `reset`.
 - `npm test` runs through `scripts/run-tests.mjs`, which uses a per-run temporary directory and removes it.
+- Project-only install: `zc` works as a dev dependency (`npm install -D`, pnpm, Yarn) with no global install and no plugin. `zc init --claude` / `zc claude install|status` put the manager skill, `/orchestrate` command and `zc-reviewer` agent into the project's `.claude/`, written for the project's own package manager and never over a file zc did not write (without `--force`). `zc doctor` reports the install type, a mismatch with the version in `node_modules`, stale or missing `.claude/` files and an un-ignored `node_modules`. See docs/SETUP.md.
+- `zc dispatch --account <id>` runs a task only on that account, with no fallback; an unknown, busy, cooling or signed-out account stops the run with a clear reason.
+- `zc account list` shows each account's 5h and weekly quota with reset times, and the attested label (use the Google email).
+- `zc account login <id>` offers to attest the email after a successful sign-in.
 
 ### Breaking
 
@@ -27,6 +33,8 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 ### Changed
 
 - The old `dispatch.lock` file is only read; a live older dispatcher blocks, nothing is deleted.
+- `zc account add` and `zc account attest` no longer ask for the typed phrase; a label already used by another account is still refused. `--confirm-unique-google-account` is accepted and does nothing.
+- `zc account remove` moves the account's profile folder (with its saved login) to `<state>/removed-profiles/` instead of leaving it in place, so adding the same id again starts signed out. It refuses while the profile is in use.
 - The per-project no-hooks directory is created once, verified on every git call and never removed recursively; planted plain files are unlinked, anything else fails closed.
 - `zc status` shows leases, heartbeat age (information only) and recent automatic releases.
 

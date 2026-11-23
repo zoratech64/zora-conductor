@@ -51,7 +51,7 @@ Rotating between accounts that are genuinely yours, such as separate paid plans 
 
 So the rule is an operational restriction that you attest to, and `zc` enforces the attestation:
 
-- `zc account add <id> --label <name>` and `zc account attest <id> --label <name>` need a non-secret label (an alias is fine) and an explicit confirmation: type `one-google-account-per-profile` on a terminal, or pass `--confirm-unique-google-account` in scripts.
+- `zc account add <id> --label <name>` and `zc account attest <id> --label <name>` need a non-secret label (use the Google email, or an alias). No confirmation prompt: `add` runs the sign-in straight away. `--confirm-unique-google-account` is still accepted and does nothing.
 - A label already attested on another account is refused (this catches typing and copy mistakes).
 - Accounts created before this rule start unattested and are never filled in automatically. `zc` enforces the attestation when it reserves an account for a dispatch: an account without a valid, unique, manual attestation is never selected (`account-unattested`, exit 3), and an account entry written by hand into `accounts.json` without one is refused the same way.
 
