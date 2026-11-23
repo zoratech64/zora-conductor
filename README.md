@@ -27,14 +27,25 @@ git clone <this repo> && cd zora-conductor && npm link         # puts `zc` on PA
 # in Claude Code: install ECC, then this plugin
 #   /plugin marketplace add https://github.com/affaan-m/ECC   →  /plugin install ecc@ecc
 #   /plugin marketplace add <path-or-url-of-this-repo>        →  /plugin install zc@zora-conductor
-zc account add g1          # signs in an isolated profile; repeat per Gemini account
-zc account add g2
+zc account add g1 --label you@gmail.com   # signs in an isolated profile; repeat per Gemini account
+zc account add g2 --label other@gmail.com
 
 # once per project
 cd your-project && zc init && git add .zc && git commit -m "chore: add zc config"
 # then, in Claude Code inside the project:
 #   /zc:orchestrate add password reset to the auth module
 ```
+
+**No global install?** Install it in the project instead (accounts stay per machine, everything else comes from the repo):
+
+```bash
+npm install -D github:zoratech64/zora-conductor#<tag>      # or pnpm add -D / yarn add -D
+npx --no-install zc init --claude                          # pnpm exec zc ... / yarn zc ...
+git add .zc .claude package.json package-lock.json && git commit -m "chore: add zora-conductor"
+# then, in Claude Code inside the project:   /orchestrate add password reset to the auth module
+```
+
+Details and limits: [docs/SETUP.md](docs/SETUP.md).
 
 **Before you add a second account, read [docs/ACCOUNTS.md](docs/ACCOUNTS.md).** On Linux, agy keeps its login in the shared desktop keyring, so `zc` runs each account in its own private D-Bus session (needs `dbus-run-session`).
 
@@ -53,6 +64,7 @@ cd your-project && zc init && git add .zc && git commit -m "chore: add zc config
 ```
 zc init                                       create .zc/ for this project
 zc dispatch --task T.md [--json]              run one task on the next ready account
+zc dispatch --task T.md --account g3          run it only on g3 (refused if g3 is busy, cooling or needs login; no fallback)
 zc dispatch --repair <runId> --task fix.md    feedback on top of a worker's uncommitted result
 zc dispatch --task T.md --dry-run             print the exact worker prompt, run nothing
 zc reject [<runId>] [--force]                 discard a result (saved first; only files still exactly as the run left them; takes the project lock)

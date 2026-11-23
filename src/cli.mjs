@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import * as accounts from './accounts.mjs';
 import { checkAccount, findAgy, isolationMode, loginAccount } from './agy.mjs';
 import { writeJsonAtomic } from './atomicfile.mjs';
 import { cmdRegistry } from './cli-registry.mjs';
 import { installSignalGuard, resetSignalCaught, signalCaught } from './signals.mjs';
-import { requireAttestation } from './attest.mjs';
+import { askLabel, requireAttestation } from './attest.mjs';
 import { ownerAlive, withShortLease } from './reserve.mjs';
 import { registryDir } from './registry-path.mjs';
 import { openRegistry } from './registry.mjs';
@@ -19,14 +19,17 @@ import { configPath, stateRoot } from './paths.mjs';
 import { run } from './proc.mjs';
 import { loadEccRules } from './prompt.mjs';
 import { DEFAULT_ASSET_BYTES, buildIndex, eccRoot, installFrom, installFromGit, loadAssets, parseSpec, readInstalled, searchIndex, validateCatalog } from './ecc.mjs';
+import { claudeStatus, installClaude, installType, packageVersion as installPackageVersion, projectDependency, projectRunner } from './install.mjs';
 import { parseTask, splitArgv } from './task.mjs';
 import { TASK_TEMPLATE } from './template.mjs';
 
 const HELP = `zc — Claude manages, Gemini workers implement (one at a time, in place)
 
 Project (run inside the git repo):
-  zc init                                 create .zc/ config for this project
-  zc dispatch --task <file> [--json]      run one task on the next ready worker account
+  zc init [--claude]                      create .zc/ config for this project (--claude also installs the manager skill into .claude/)
+  zc claude install [--force] | status    put the manager skill, command and reviewer into this project's .claude/ (no plugin needed)
+  zc dispatch --task <file> [--json] [--account <id>]
+                                          run one task on the next ready worker account (or only on <id>: no fallback)
   zc dispatch --prompt "<text>" --allow <glob> [--verify "<cmd>"] [--ecc skill:<name>,agent:<name>] [--id <id>]
   zc dispatch --repair <runId> --task <file>   send feedback on top of a worker's uncommitted result (task declares cause:)
   zc reject [<runId>] [--force]           discard a worker's uncommitted result (saved first)
@@ -40,9 +43,9 @@ Project (run inside the git repo):
   zc ecc install|status|list|search|show  browse the whole ECC catalog and install it (workers can be given any asset)
 
 Accounts (machine-global):
-  zc account add <id> --label <name> [--no-login] [--confirm-unique-google-account]
-                                          create an isolated profile and sign in
-  zc account attest <id> --label <name> [--confirm-unique-google-account]
+  zc account add <id> --label <email> [--no-login]
+                                          create an isolated profile and sign in; refused when another account has the same label
+  zc account attest <id> --label <email>
                                           record that this Google account is used in no other profile
   zc account login <id>                   sign in again
   zc account check [<id>]                 verify sign-in and read quota windows
@@ -64,12 +67,28 @@ function projectRoot(opts) {
 
 /** The installed zora-conductor version, read from this package's own package.json. */
 function packageVersion() {
-  return JSON.parse(readFileSync(resolve(import.meta.dirname, '..', 'package.json'), 'utf8')).version;
+  return installPackageVersion();
 }
 
 const fmtTime = (ms) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '-');
 
-function cmdInit(root) {
+/** How the project reaches this zc: its own package manager when zc is a dependency, plain `zc` otherwise. */
+const runnerFor = (root) => (installType() === 'project' ? projectRunner(root) : 'zc');
+
+function cmdClaude(argv) {
+  const opts = parseArgs(argv, { bool: ['force'] });
+  const [sub] = opts._;
+  const root = projectRoot(opts);
+  const runner = runnerFor(root);
+  if (sub === 'install') {
+    for (const f of installClaude(root, { runner, force: Boolean(opts.force) })) console.log(`zc: ${f.action.padEnd(9)} ${f.rel}`);
+    console.log(`zc: commit .claude/ so the tree is clean before the first dispatch. Claude Code finds the skill as /orchestrate. zc command in it: ${runner}`);
+  } else if (sub === 'status') {
+    for (const f of claudeStatus(root, { runner })) console.log(`${f.state.padEnd(9)} ${f.rel}`);
+  } else throw new Error('usage: zc claude install [--force] | status');
+}
+
+function cmdInit(root, opts = {}) {
   const file = configPath(root);
   if (existsSync(file)) throw new Error(`${file} already exists`);
   const detected = detectStack(root);
@@ -85,6 +104,7 @@ function cmdInit(root) {
   writeFileSync(join(root, '.zc', 'progress.md'), '# Progress log\n\nOne line per accepted task: date, task id, run id, commit.\n');
   writeFileSync(join(root, '.zc', 'tasks', 'TEMPLATE.md'), TASK_TEMPLATE);
   console.log(`zc: initialised ${join(root, '.zc')} (detected: ${detected.stack})`);
+  if (opts.claude) cmdClaude(['install', '--project', root]);
   console.log('next: review .zc/config.json (verify commands, ecc.path), commit .zc/, then `zc account add <id>`.');
 }
 
@@ -95,7 +115,7 @@ async function cmdAccount(argv) {
     case 'add': {
       if (!id) throw new Error('usage: zc account add <id> --label <name>');
       accounts.preflightAttest(id, opts.label, { adding: true });
-      const identity = await requireAttestation(id, opts);
+      const identity = requireAttestation(id, opts);
       const account = accounts.addAccount(id, { identity });
       console.log(`zc: created profile ${account.profileDir}`);
       if (opts['no-login']) return;
@@ -105,7 +125,7 @@ async function cmdAccount(argv) {
     case 'attest': {
       if (!id || !accounts.getAccount(id)) throw new Error(id ? `unknown account "${id}"` : 'usage: zc account attest <id> --label <name>');
       accounts.preflightAttest(id, opts.label, { adding: false });
-      const identity = await requireAttestation(id, opts);
+      const identity = requireAttestation(id, opts);
       accounts.attestAccount(id, identity.label);
       console.log(`zc: ${id} attested as "${identity.label}" (a human claim; ZC cannot verify it)`);
       return;
@@ -113,7 +133,8 @@ async function cmdAccount(argv) {
     case 'login': {
       const account = accounts.getAccount(id);
       if (!account) throw new Error(`unknown account "${id}"`);
-      await withShortLease(account, 'login', () => signIn(account));
+      const ok = await withShortLease(account, 'login', () => signIn(account));
+      if (ok) await attestAfterLogin(id, opts);
       return;
     }
     case 'check': {
@@ -134,19 +155,50 @@ async function cmdAccount(argv) {
       accounts.resetAccount(id);
       console.log(`zc: ${id} cleared; run \`zc account check ${id}\` to confirm it works`);
       return;
-    case 'remove':
+    case 'remove': {
+      const account = accounts.getAccount(id);
+      if (account) await withShortLease(account, 'remove', async () => {}); // refuses while the profile is in use
       accounts.removeAccount(id);
-      console.log(`zc: removed ${id} (its profile folder was left on disk)`);
+      const kept = archiveProfile(account);
+      console.log(kept ? `zc: removed ${id}; its profile (with the saved login) was moved to ${kept}` : `zc: removed ${id} (its profile folder was left where it is)`);
       return;
+    }
     default: throw new Error('usage: zc account add|attest|login|check|list|reset|remove');
   }
+}
+
+/** Move a removed account's profile aside so a later add of the same id starts logged out. Not deleted: it holds the saved login. */
+function archiveProfile(account) {
+  if (!existsSync(account.profileDir) || dirname(account.profileDir) !== join(stateRoot(), 'profiles')) return null;
+  const parent = join(stateRoot(), 'removed-profiles');
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const dest = join(parent, `${account.id}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  renameSync(account.profileDir, dest);
+  return dest;
 }
 
 async function signIn(account) {
   console.log(`zc: signing in "${account.id}". Sign in with the Google account meant for THIS worker, then exit agy.`);
   const result = await loginAccount(account);
   if (result.error) throw new Error(result.error);
-  await verifyAccount(account);
+  return verifyAccount(account);
+}
+
+/** After a good login: record the email as the attested label (a human claim). Skipped when already attested and no --label. */
+async function attestAfterLogin(id, opts) {
+  const account = accounts.getAccount(id);
+  const attested = accounts.attestationStatus(account, accounts.listAccounts()) === 'attested';
+  let label = opts.label ? String(opts.label) : '';
+  if (!label) {
+    if (attested) return;
+    if (!process.stdin.isTTY) return console.log(`zc: ${id} is not attested. Run \`zc account attest ${id} --label <email>\`.`);
+    label = await askLabel();
+    if (!label) return console.log(`zc: ${id} left unattested.`);
+  }
+  accounts.preflightAttest(id, label, { adding: false });
+  const identity = requireAttestation(id, { ...opts, label });
+  accounts.attestAccount(id, identity.label);
+  console.log(`zc: ${id} attested as "${identity.label}" (a human claim; ZC cannot verify it)`);
 }
 
 async function verifyAccount(account) {
@@ -165,6 +217,7 @@ async function verifyAccount(account) {
   if (isolationMode() === 'none') {
     console.log('zc: warning — isolation is off. If agy keeps its login in the OS keyring, accounts may share one identity. See docs/ACCOUNTS.md.');
   }
+  return r.ok;
 }
 
 /** Account leases from the machine-wide registry (does not create the registry just to look). */
@@ -186,6 +239,21 @@ function printLeases() {
   } finally { registry.close(); }
 }
 
+/** Per-window quota: lowest remaining % across model groups, earliest reset. Window names come from agy ("five hour", "weekly"). */
+function fmtQuota(usage) {
+  if (!usage?.length) return '';
+  const byWindow = new Map();
+  for (const l of usage) {
+    const cur = byWindow.get(l.window);
+    byWindow.set(l.window, {
+      pct: Math.min(cur?.pct ?? Infinity, l.remainingPercent),
+      reset: Math.min(cur?.reset ?? Infinity, Date.parse(l.resetsAt))
+    });
+  }
+  const name = (w) => (/five|5/.test(w) ? '5h' : w.replace(/\s+/g, '-'));
+  return ' ' + [...byWindow].map(([w, v]) => `${name(w)} ${v.pct}% (resets ${fmtTime(v.reset)}Z)`).join('  ');
+}
+
 function printAccounts() {
   const list = accounts.listAccounts();
   if (!list.length) return console.log('zc: no accounts. Add one with `zc account add <id>`.');
@@ -193,10 +261,9 @@ function printAccounts() {
   const current = accounts.currentId();
   for (const a of list) {
     const hold = (a.cooldownUntil || 0) > now ? ` cooling until ${fmtTime(a.cooldownUntil)} (${a.holdReason})` : a.holdReason && a.status !== 'ready' ? ` (${a.holdReason})` : '';
-    const low = a.usage?.length ? ` quota>=${Math.min(...a.usage.map((l) => l.remainingPercent))}%` : '';
     const state = accounts.attestationStatus(a, list);
     const who = state === 'attested' ? ` attested: ${a.identity.label}` : ` ${state.toUpperCase()}`;
-    console.log(`${a.id === current ? '*' : ' '} ${a.id.padEnd(14)} ${a.status.padEnd(12)}${low}${who}${hold}`);
+    console.log(`${a.id === current ? '*' : ' '} ${a.id.padEnd(14)} ${a.status.padEnd(12)}${fmtQuota(a.usage)}${who}${hold}`);
   }
 }
 
@@ -227,7 +294,7 @@ async function cmdDispatch(argv) {
     throw new Error('a repair task must declare its cause in front matter: cause: worker|contract|environment|verify (optional causeNote: <one line>)');
   }
   const result = await dispatch({
-    root, task, config, repairOf: opts.repair ?? null, dryRun: Boolean(opts['dry-run']),
+    root, task, config, repairOf: opts.repair ?? null, dryRun: Boolean(opts['dry-run']), account: opts.account ?? null,
     log: (line) => console.error(`zc: ${line}`)
   });
   if (result.status === 'DRY_RUN') {
@@ -311,6 +378,28 @@ async function cmdEcc(argv) {
   }
 }
 
+/** Checks that only make sense for a project: which zc it pins, the Claude files in .claude/, and the .gitignore. */
+function projectInstallChecks(root, add) {
+  const dep = projectDependency(root);
+  const mine = packageVersion();
+  if (dep.installed && dep.installed !== mine) {
+    add('project zc version', false, `this is ${mine}, the project has ${dep.installed} in node_modules`, `run the project's copy (${projectRunner(root)}) or update the dependency`, 'warn');
+  } else if (dep.declared && !dep.installed) {
+    add('project zc dependency', false, 'declared in package.json but not installed', 'run npm install (or pnpm/yarn install)', 'warn');
+  } else if (dep.installed) add('project zc version', true, `${dep.installed}, same as this one`);
+  const runner = runnerFor(root);
+  const files = claudeStatus(root, { runner });
+  if (files.every((f) => f.state === 'missing')) {
+    add('Claude manager files in .claude/', false, 'not installed in this project', 'zc claude install (or install the Claude plugin instead)', 'warn');
+  } else if (files.some((f) => f.state !== 'current')) {
+    add('Claude manager files in .claude/', false, files.map((f) => `${f.state} ${f.rel}`).join('; '), 'zc claude install (add --force to replace files zc did not write)', 'warn');
+  } else add('Claude manager files in .claude/', true, `current (${runner})`);
+  if (dep.installed && existsSync(join(root, 'node_modules'))) {
+    const ignored = G.git(root, ['check-ignore', '-q', 'node_modules'], { allowFail: true }).status === 0;
+    if (!ignored) add('.gitignore', false, 'node_modules is not ignored, so the tree looks dirty to dispatch', 'add node_modules/ to .gitignore and commit it', 'warn');
+  }
+}
+
 async function cmdDoctor(argv) {
   const opts = parseArgs(argv);
   const checks = [];
@@ -337,6 +426,7 @@ async function cmdDoctor(argv) {
   }
   const claude = await run(lookup, ['claude']);
   add('claude (Claude Code)', claude.code === 0, claude.stdout.trim().split(/\r?\n/)[0] ?? '', 'install Claude Code and sign in');
+  add('zc install', true, `${installType()} v${packageVersion()} (${resolve(import.meta.dirname, '..')})`);
   const list = accounts.listAccounts();
   add('worker accounts ready', list.some((a) => a.status === 'ready'), `${list.filter((a) => a.status === 'ready').length}/${list.length} ready`, 'zc account add <id>');
   const root = G.toplevel(resolve(opts.project ?? process.cwd()));
@@ -344,6 +434,7 @@ async function cmdDoctor(argv) {
     try {
       const config = loadConfig(root);
       add('.zc/config.json', true, root);
+      projectInstallChecks(root, add);
       try {
         const ecc = eccRoot(config);
         const v = validateCatalog(ecc.dir, { deep: ecc.complete });
@@ -399,7 +490,8 @@ async function runCommand(argv) {
     switch (command) {
       case undefined: case 'help': case '--help': case '-h': console.log(HELP); return 0;
       case '--version': console.log(packageVersion()); return 0;
-      case 'init': cmdInit(projectRoot(parseArgs(rest))); return 0;
+      case 'init': { const o = parseArgs(rest, { bool: ['claude'] }); cmdInit(projectRoot(o), o); return 0; }
+      case 'claude': cmdClaude(rest); return 0;
       case 'account': await cmdAccount(rest); return 0;
       case 'registry': await cmdRegistry(rest); return 0;
       case 'dispatch': return await cmdDispatch(rest);

@@ -58,6 +58,25 @@ Add the manager plugin in Claude Code (a local path or a Git URL both work):
 
 You now have `/zc:orchestrate`, the `orchestrate` skill, and the `zc-reviewer` agent.
 
+### Alternative: install inside one project (no global install, no plugin)
+
+Everything the project needs comes from the project itself, so a teammate who clones it only runs the package manager.
+
+```bash
+cd my-project
+npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.4   # or: pnpm add -D ... / yarn add -D ...
+npx --no-install zc init --claude         # pnpm: pnpm exec zc init --claude   yarn: yarn zc init --claude
+git add .zc .claude package.json package-lock.json && git commit -m "chore: add zora-conductor"
+```
+
+- `zc init --claude` (or `zc claude install`) copies the manager skill, the `/orchestrate` command and the `zc-reviewer` agent into the project's `.claude/` folder. They are written for the project's own package manager (the file says to run `npx --no-install zc`, `pnpm exec zc` or `yarn zc` wherever it says `zc`), so the skill always runs the same version as the project's `zc`. Commit `.claude/`: dispatch refuses a dirty tree. Make sure `node_modules/` is in `.gitignore`.
+- Files zc did not write are never overwritten unless you pass `--force`.
+- Accounts, leases and run records are still per machine (`~/.local/state/zora-conductor`), not per project: add accounts once with `npx --no-install zc account add <id> --label <email>`, and every project on the machine can use them. Do not mix versions that disagree about the accounts store (see `zc registry status`): an older project copy sees no accounts once the versioned store is active.
+- `zc doctor` shows the install type (`project`, `global` or `plugin`), warns when the running `zc` is not the version the project has in `node_modules`, and warns when the `.claude/` files are missing or stale.
+- Update: bump the dependency, then run `zc claude install` to refresh the files. Roll back: install the previous tag, then run `zc claude install` again.
+- Yarn Plug'n'Play has no `node_modules`; `yarn zc` is the way to start it, and `zc doctor` cannot see the installed copy there.
+- Installing the Claude plugin as well is allowed but not needed. You would then have both `/zc:orchestrate` and `/orchestrate`.
+
 ## 4. Add the Gemini accounts
 
 Read [ACCOUNTS.md](ACCOUNTS.md) first, then:

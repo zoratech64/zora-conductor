@@ -2,3 +2,4 @@ node_modules/
 *.tmp
 .zc/progress.local.md
 .DS_Store
+graphify-out/
