@@ -64,7 +64,7 @@ Everything the project needs comes from the project itself, so a teammate who cl
 
 ```bash
 cd my-project
-npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.6   # or: pnpm add -D ... / yarn add -D ...
+npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.7   # or: pnpm add -D ... / yarn add -D ...
 npx --no-install zc init --claude         # pnpm: pnpm exec zc init --claude   yarn: yarn zc init --claude
 git add .zc .claude package.json package-lock.json && git commit -m "chore: add zora-conductor"
 ```
@@ -109,6 +109,8 @@ Edit `.zc/config.json`:
   "ecc": { "path": "", "rulePacks": ["common", "dart"] }
 }
 ```
+
+Worker model: every worker runs `gemini-4-hydrogen-medium` (Gemini 4 Hydrogen – Medium; check the id with `agy models`) unless you set `worker.model` in `.zc/config.json`. A configured value always wins, and so does `model:` in a task. `"auto"` or `""` leaves the choice to agy. Retries, capacity waits and fallback accounts all use the same model.
 
 Other `defaults` keys: `onLimit` (`reset` is the default; `continue` keeps a failed worker's edits for the next account; `handoff` does that only after zc has checked them and written a `handoff-n.md`, at most `maxHandoffs` (default 2) times), `maxLiveProjects` (2), `capacityWaitSeconds` (`[60, 180]`) and `networkWaitSeconds` (`[30, 120]`).
 

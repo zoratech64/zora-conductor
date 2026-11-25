@@ -6,6 +6,8 @@ import { configPath } from './paths.mjs';
 import { parseCount, parseMinutes } from './limits.mjs';
 import { splitArgv } from './task.mjs';
 
+export const DEFAULT_MODEL = 'gemini-4-hydrogen-medium';
+
 export const DEFAULTS = {
   version: 1,
   /** Commands the manager's gate runs after every worker task (argv arrays or strings). */
@@ -32,7 +34,8 @@ export const DEFAULTS = {
   forbidden: [],
   worker: {
     adapter: 'agy',
-    model: '',
+    /** Verified with `agy models` (agy 1.5.14). A configured value, '' or 'auto' (agy's own pick) overrides it. */
+    model: DEFAULT_MODEL,
     effort: '',
     /** edit: file edits only. read: plan mode. all: also lets the worker run commands (opt-in). */
     permissions: 'edit',
