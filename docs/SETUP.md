@@ -64,7 +64,7 @@ Everything the project needs comes from the project itself, so a teammate who cl
 
 ```bash
 cd my-project
-npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.5   # or: pnpm add -D ... / yarn add -D ...
+npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.6   # or: pnpm add -D ... / yarn add -D ...
 npx --no-install zc init --claude         # pnpm: pnpm exec zc init --claude   yarn: yarn zc init --claude
 git add .zc .claude package.json package-lock.json && git commit -m "chore: add zora-conductor"
 ```
