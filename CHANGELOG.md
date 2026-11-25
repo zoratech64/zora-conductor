@@ -8,6 +8,12 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+## [0.2.0-alpha.7] - 2026-11-25
+
+### Changed
+
+- The default worker model is now `gemini-4-hydrogen-medium` (Gemini 4 Hydrogen – Medium, id checked with `agy models` on agy 1.5.14). It applies to new projects and to existing `.zc/config.json` files that set no `worker.model`; before, agy chose. Any configured `worker.model` (including `""` and `"auto"`) and a task's `model:` are kept. Retries, capacity waits and fallback accounts use the same model. **Migration:** to keep agy's own choice, set `"worker": { "model": "auto" }`.
+
 ## [0.2.0-alpha.6] - 2026-11-25
 
 ### Fixed
