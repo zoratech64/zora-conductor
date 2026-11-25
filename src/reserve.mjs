@@ -124,9 +124,9 @@ export function recordWorker(lease, child) {
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const SETTLE_DELAYS_MS = [50, 100, 200, 400, 800, 1000];
 
-function proveOnce({ profileDir, pgid, worker }) {
+function proveOnce({ profileDir, pgid, worker, ignoreUpdater }) {
   const group = pgid ? groupAlive(pgid) : { verdict: 'none', pids: [] };
-  const scan = scanProfileUsers(profileDir, worker ? { startedAfter: { startTicks: worker.startTicks, bootId: worker.bootId } } : {});
+  const scan = scanProfileUsers(profileDir, { ignoreUpdater, ...(worker ? { startedAfter: { startTicks: worker.startTicks, bootId: worker.bootId } } : {}) });
   return { gone: group.verdict === 'none' && scan.verdict === 'none', group: group.verdict, scan: scan.verdict, pids: [...group.pids, ...scan.pids] };
 }
 
@@ -140,11 +140,11 @@ function proveOnce({ profileDir, pgid, worker }) {
 export function proveWorkerGone({ profileDir, pgid, worker, delays = SETTLE_DELAYS_MS, scanOnly = false }) {
   if (!pgid && !scanOnly) return { gone: true, basis: 'no worker was started' };
   if (process.platform !== 'linux') return { gone: true, basis: 'child exited (no process identity on this platform)' };
-  let proof = proveOnce({ profileDir, pgid, worker });
+  let proof = proveOnce({ profileDir, pgid, worker, ignoreUpdater: scanOnly });
   for (const ms of delays) {
     if (proof.gone) break;
     pause(ms);
-    proof = proveOnce({ profileDir, pgid, worker });
+    proof = proveOnce({ profileDir, pgid, worker, ignoreUpdater: scanOnly });
   }
   return proof;
 }

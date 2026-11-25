@@ -369,3 +369,13 @@ test('malformed stat and status fields are errors, not zeros; dotted env paths s
   const r = scanProfileUsers('/p/g1', { procRoot: root, platform: 'linux', selfPid: 0 });
   assert.ok(r.pids.includes(1702));
 });
+
+test('scanProfileUsers (fake /proc): agy --bg-updater is skipped only with ignoreUpdater', () => {
+  const root = tmp('zc-proc-');
+  const profile = '/data/profiles/g1';
+  fakeProc(root, 301, { cmdline: ['agy', '--bg-updater', `--gemini_dir=${profile}`].join('\0') });
+  fakeProc(root, 302, { cmdline: ['agy', '--gemini_dir', profile, '-p'].join('\0') });
+  const opts = { procRoot: root, platform: 'linux', selfPid: 0 };
+  assert.deepEqual(scanProfileUsers(profile, opts).pids.sort(), [301, 302]);
+  assert.deepEqual(scanProfileUsers(profile, { ...opts, ignoreUpdater: true }).pids, [302]);
+});

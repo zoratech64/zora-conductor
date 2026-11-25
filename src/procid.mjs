@@ -177,11 +177,17 @@ function liveThreads(procRoot, pid) {
   }
 }
 
+/** agy's detached self-updater (`agy --bg-updater ...`) outlives every agy call; it is not a worker. */
+function isUpdater(procRoot, pid) {
+  try { return readFileSync(`${procRoot}/${pid}/cmdline`, 'utf8').split('\0').includes('--bg-updater'); } catch { return false; }
+}
+
 /** 'match' | 'clear' | 'unreadable' for one process. */
-function inspect(procRoot, pid, bases, uid, olderThan) {
+function inspect(procRoot, pid, bases, uid, olderThan, ignoreUpdater) {
   try {
     const stat = readStat(procRoot, pid);
     if (!stat || (DEAD_STATES.has(stat.state) && !liveThreads(procRoot, pid))) return 'clear';
+    if (ignoreUpdater && isUpdater(procRoot, pid)) return 'clear';
     const foreign = uid !== undefined && readUid(procRoot, pid) !== uid;
     try {
       const hit = usesProfileEnv(procRoot, pid, bases) || usesProfileArgv(procRoot, pid, bases) ||
@@ -247,7 +253,7 @@ export function scanProfileUsers(profileDir, opts = {}) {
   }
   for (const pid of listed) {
     if (pid === selfPid) continue;
-    const result = inspect(procRoot, pid, bases, uid, olderThan);
+    const result = inspect(procRoot, pid, bases, uid, olderThan, opts.ignoreUpdater === true);
     if (result === 'match') pids.push(pid);
     else if (result === 'unreadable') unreadable.push(pid);
   }

@@ -8,6 +8,12 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+## [0.2.0-alpha.6] - 2026-11-25
+
+### Fixed
+
+- `zc smoke` and `zc account check` failed on every account with a real agy: `agy` leaves a detached `agy --bg-updater` process on the profile, so the short lease was kept ("processes still use its profile"). The check scan now ignores that updater. Dispatch's worker-gone proof is unchanged.
+
 ## [0.2.0-alpha.5] - 2026-11-25
 
 ### Added
