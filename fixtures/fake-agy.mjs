@@ -19,6 +19,7 @@ const scenario = existsSync(scenarioFile) ? JSON.parse(readFileSync(scenarioFile
 
 const pIndex = argv.indexOf('-p');
 if (pIndex >= 0 && argv[pIndex + 1] === '/usage') {
+  if (scenario.usageHoldMs) await new Promise((resolve) => setTimeout(resolve, scenario.usageHoldMs)); // a worker that hangs
   if (scenario.signedOut) { console.error('Authentication required. Please sign in.'); process.exit(1); }
   console.log('Gemini Models\tFive Hour Limit Remaining\t80%\t2099-01-01T00:00:00Z');
   process.exit(0);

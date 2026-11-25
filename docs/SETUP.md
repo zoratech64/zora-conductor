@@ -64,7 +64,7 @@ Everything the project needs comes from the project itself, so a teammate who cl
 
 ```bash
 cd my-project
-npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.4   # or: pnpm add -D ... / yarn add -D ...
+npm install -D github:zoratech64/zora-conductor#v0.2.0-alpha.5   # or: pnpm add -D ... / yarn add -D ...
 npx --no-install zc init --claude         # pnpm: pnpm exec zc init --claude   yarn: yarn zc init --claude
 git add .zc .claude package.json package-lock.json && git commit -m "chore: add zora-conductor"
 ```
@@ -86,6 +86,7 @@ zc account add g1      # opens agy; sign in with the Google account for this wor
 zc account add g2
 zc account list
 zc account check       # confirms each sign-in and prints the remaining quota
+zc smoke               # CI-friendly: OK/FAIL per worker, exit 0 only if all respond
 ```
 
 State lives outside every project: `~/.local/state/zora-conductor` on Ubuntu, `%LOCALAPPDATA%\zora-conductor` on Windows. Override with `ZC_HOME`. Never commit it.

@@ -20,6 +20,7 @@ import { run } from './proc.mjs';
 import { loadEccRules } from './prompt.mjs';
 import { DEFAULT_ASSET_BYTES, buildIndex, eccRoot, installFrom, installFromGit, loadAssets, parseSpec, readInstalled, searchIndex, validateCatalog } from './ecc.mjs';
 import { claudeStatus, installClaude, installType, packageVersion as installPackageVersion, projectDependency, projectRunner } from './install.mjs';
+import { formatSmoke, smokeAll } from './smoke.mjs';
 import { parseTask, splitArgv } from './task.mjs';
 import { TASK_TEMPLATE } from './template.mjs';
 
@@ -40,6 +41,7 @@ Project (run inside the git repo):
   zc runs                                 recent runs
   zc status                               accounts, cooldowns, latest run
   zc doctor                               check this machine and project
+  zc smoke [--timeout <sec>] [--json]     call every registered worker (non-model, read-only); exit 0 only if all respond
   zc ecc install|status|list|search|show  browse the whole ECC catalog and install it (workers can be given any asset)
 
 Accounts (machine-global):
@@ -476,6 +478,15 @@ export async function deferSignals(operation) {
   }
 }
 
+async function cmdSmoke(argv) {
+  const opts = parseArgs(argv, { bool: ['json'] });
+  const timeoutSec = opts.timeout === undefined ? 60 : Number(opts.timeout);
+  if (!(timeoutSec > 0)) throw new Error('--timeout needs a number of seconds above 0');
+  const report = await smokeAll({ accounts: accounts.listAccounts(), timeoutMs: timeoutSec * 1000, check: checkAccount, lease: withShortLease });
+  console.log(opts.json ? JSON.stringify(report, null, 2) : formatSmoke(report));
+  return report.failed || !report.total ? 1 : 0;
+}
+
 /** An operation that was stopped by a signal exits 130 whatever it returned. */
 export async function main(argv) {
   resetSignalCaught();
@@ -496,6 +507,7 @@ async function runCommand(argv) {
       case 'registry': await cmdRegistry(rest); return 0;
       case 'dispatch': return await cmdDispatch(rest);
       case 'doctor': return await cmdDoctor(rest);
+      case 'smoke': return await cmdSmoke(rest);
       case 'ecc': await cmdEcc(rest); return 0;
       case 'reject': {
         const opts = parseArgs(rest, { bool: ['force'] });
