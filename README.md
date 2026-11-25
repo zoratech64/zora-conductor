@@ -71,6 +71,7 @@ zc reject [<runId>] [--force]                 discard a result (saved first; onl
 zc accept [<runId>]                           stage only a verified run's files (never commits)
 zc ecc install|status|list|search|show        the whole ECC catalog (skills, agents, commands, rules)
 zc runs | status | doctor
+zc smoke [--timeout <sec>] [--json]           call every worker once (read-only, no tokens); exit 0 only if all answer
 zc account add|login|check|list|reset|remove
 ```
 

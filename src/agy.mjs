@@ -215,15 +215,15 @@ export function parseUsage(text) {
 }
 
 /** Non-model call used to confirm an account is signed in and read its quota windows. */
-export async function checkAccount(account) {
+export async function checkAccount(account, { timeoutMs = 60_000 } = {}) {
   const spec = findAgy();
   const args = [...spec.prefix, '--gemini_dir', account.profileDir, '-p', '/usage'];
   const plan = launchPlan(account, spec, args);
-  const result = await run(plan.command, plan.args, { env: plan.env, timeoutMs: 60_000 });
+  const result = await run(plan.command, plan.args, { env: plan.env, timeoutMs });
   const text = `${result.stdout}\n${result.stderr}`;
   const limits = parseUsage(text);
   const authFailed = /authentication required|please (?:sign|log) ?in|not authenticated/i.test(text);
-  return { ok: result.code === 0 && !authFailed, authFailed, limits, text: text.trim().slice(0, 400), error: result.error };
+  return { ok: result.code === 0 && !authFailed, authFailed, timedOut: result.timedOut, limits, text: text.trim().slice(0, 400), error: result.error };
 }
 
 /** Interactive sign-in: hands the terminal to agy, with this account's isolated profile. */

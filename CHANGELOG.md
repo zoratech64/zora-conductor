@@ -8,6 +8,12 @@ Versions 0.1.0 and 0.1.3 to 0.1.7 are recorded in git: the manifest files in the
 
 ## [Unreleased]
 
+## [0.2.0-alpha.5] - 2026-11-25
+
+### Added
+
+- `zc smoke [--timeout <sec>] [--json]`: one read-only, non-model call (`agy -p /usage`) to every registered worker. Prints `OK` or `FAIL` per worker and a total/passed/failed summary; exit 0 only if all respond, 1 if any fail (or none are registered). A hung, signed-out or busy worker is reported as `FAIL` and the rest still run. It changes no account state and uses no tokens.
+
 ## [0.2.0-alpha.4] - 2026-11-23
 
 ### Added
